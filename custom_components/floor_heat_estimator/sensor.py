@@ -34,7 +34,8 @@ class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
-        self._attr_suggested_display_precision = 3 if key.endswith("power") else 2
+        if unit is not None:
+            self._attr_suggested_display_precision = 3 if key.endswith("power") else 2
         if unit is not None:
             self._attr_state_class = SensorStateClass.MEASUREMENT
         if not key.endswith("power"):

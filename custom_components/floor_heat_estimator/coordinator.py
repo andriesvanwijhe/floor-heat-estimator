@@ -22,7 +22,7 @@ def numeric_state(state, kind):
     number = finite_number(state.state)
     if number is None:
         return None
-    unit = str(state.attributes.get("unit_of_measurement", "")).strip().lower()
+    unit = str(state.attributes.get("unit_of_measurement") or "").strip().lower()
     if kind == "heat_input":
         if unit == "w":
             return number / 1000
