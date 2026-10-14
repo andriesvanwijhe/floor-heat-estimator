@@ -62,6 +62,7 @@ class FloorCoordinator(DataUpdateCoordinator):
         self.engine = Estimator(self.settings)
         self.last_recorded_minute = None
         self.restored = False
+        self.pending_restore = None
 
     @callback
     def subscribe(self):
@@ -77,9 +78,13 @@ class FloorCoordinator(DataUpdateCoordinator):
         expected = {key: self.settings[key] for key in SOURCE_KEYS}
         gates = {key: self.settings[key] for key in ("active_mode", "flow_threshold", "settling_minutes")}
         if stored.get("sources") == expected and stored.get("gates") == gates:
-            self.restored = self.engine.restore(stored.get("model_state", {}))
+            # Source integrations may still be starting. Keep the snapshot until
+            # current driving inputs are valid, rather than immediately losing it.
+            self.pending_restore = stored
 
     def stored_state(self):
+        if self.pending_restore is not None:
+            return self.pending_restore
         return {"sources": {key: self.settings[key] for key in SOURCE_KEYS},
                 "gates": {key: self.settings[key] for key in ("active_mode", "flow_threshold", "settling_minutes")},
                 "model_state": self.engine.snapshot()}
@@ -91,6 +96,14 @@ class FloorCoordinator(DataUpdateCoordinator):
         mode = states["mode"].state if states["mode"] else None
         sample = Sample(now.timestamp(), numeric["room_temperature"], numeric["heat_input"],
                         numeric["supply_temperature"], numeric["return_temperature"], numeric["flow"], mode)
+        if (self.pending_restore is not None and sample.room is not None
+                and mode not in (None, "", "unknown", "unavailable")
+                and (mode != self.settings["active_mode"] or sample.power is not None)):
+            stored = self.pending_restore.get("model_state", {})
+            previous_time = finite_number((stored.get("previous") or {}).get("timestamp"))
+            if previous_time is not None and previous_time <= sample.timestamp:
+                self.restored = self.engine.restore(stored)
+            self.pending_restore = None
         data = self.engine.step(sample)
         minute = int(now.timestamp() // 60)
         if self.settings["record_samples"] and minute != self.last_recorded_minute:
