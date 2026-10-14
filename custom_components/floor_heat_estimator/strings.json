@@ -1,0 +1,83 @@
+{
+  "title": "Floor Heat Estimator",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Source sensors",
+        "description": "Select thermal power delivered to the floor circuit. Heat input is assumed zero outside the chosen heating mode. Unitless temperature sensors are interpreted as degrees C.",
+        "data": {
+          "name": "Name",
+          "heat_input": "Thermal heat input",
+          "room_temperature": "Room temperature",
+          "supply_temperature": "Supply temperature",
+          "return_temperature": "Return temperature",
+          "flow": "Circuit flow",
+          "mode": "Operating mode",
+          "active_mode": "Space-heating mode value"
+        }
+      },
+      "parameters": {
+        "title": "Thermal model settings",
+        "description": "These are experimental estimates based on mean water temperature. Initial parameters are provisional; adjust them for your system.",
+        "data": {
+          "flow_threshold": "Minimum circulation flow (l/h)",
+          "settling_minutes": "Settling period after circulation starts (minutes)",
+          "linear_capacity": "Linear effective heat capacity (kWh/K)",
+          "linear_conductance": "Linear conductance (kW/K)",
+          "nonlinear_capacity": "Exponent-model effective heat capacity (kWh/K)",
+          "nonlinear_output_at_5k": "Exponent-model heat output at 5 K (kW)",
+          "exponent": "Heat-output exponent",
+          "maximum_gap_minutes": "Maximum gap between updates (minutes)",
+          "maximum_prediction_hours": "Maximum age of temperature observation (hours)",
+          "record_samples": "Record local minute samples for future fitting"
+        }
+      }
+    },
+    "error": {
+      "entity_missing": "The selected entity does not exist.",
+      "unsupported_unit": "Unsupported unit. Use W/kW for power, l/h or l/min or m3/h for flow, and C/F for temperatures.",
+      "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
+      "invalid_parameter": "Enter a finite number inside the displayed range."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Source sensors",
+        "description": "Select thermal power delivered to the floor circuit. Heat input is assumed zero outside the chosen heating mode. Unitless temperature sensors are interpreted as degrees C.",
+        "data": {
+          "name": "Name",
+          "heat_input": "Thermal heat input",
+          "room_temperature": "Room temperature",
+          "supply_temperature": "Supply temperature",
+          "return_temperature": "Return temperature",
+          "flow": "Circuit flow",
+          "mode": "Operating mode",
+          "active_mode": "Space-heating mode value"
+        }
+      },
+      "parameters": {
+        "title": "Thermal model settings",
+        "description": "These are experimental estimates based on mean water temperature. Initial parameters are provisional; adjust them for your system.",
+        "data": {
+          "flow_threshold": "Minimum circulation flow (l/h)",
+          "settling_minutes": "Settling period after circulation starts (minutes)",
+          "linear_capacity": "Linear effective heat capacity (kWh/K)",
+          "linear_conductance": "Linear conductance (kW/K)",
+          "nonlinear_capacity": "Exponent-model effective heat capacity (kWh/K)",
+          "nonlinear_output_at_5k": "Exponent-model heat output at 5 K (kW)",
+          "exponent": "Heat-output exponent",
+          "maximum_gap_minutes": "Maximum gap between updates (minutes)",
+          "maximum_prediction_hours": "Maximum age of temperature observation (hours)",
+          "record_samples": "Record local minute samples for future fitting"
+        }
+      }
+    },
+    "error": {
+      "entity_missing": "The selected entity does not exist.",
+      "unsupported_unit": "Unsupported unit. Use W/kW for power, l/h or l/min or m3/h for flow, and C/F for temperatures.",
+      "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
+      "invalid_parameter": "Enter a finite number inside the displayed range."
+    }
+  }
+}
