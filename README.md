@@ -2,7 +2,7 @@
 
 An experimental Home Assistant custom integration for estimating heat released by an underfloor heating circuit during heating and cooldown.
 
-Version 0.1.0 creates separate linear and power-law estimates from existing sensors. Parameters are entered manually; automatic fitting is planned for a later version.
+Version 0.1.1 creates separate linear and power-law estimates from existing sensors. Parameters are entered manually; automatic fitting is planned for a later version.
 
 ## What it provides
 
@@ -77,7 +77,7 @@ If minute recording is enabled, daily UTC CSV files are written under:
 /config/floor_heat_estimator/<config-entry-id>/YYYY-MM-DD.csv
 ```
 
-They include normalized source signals, validity, model status and estimates, preserving missing numeric readings as blank fields. Sampling occurs at approximately one-minute resolution and is separate from the more frequent source-change updates. Data is stored locally; the integration does not upload it. Version 0.1.0 does not automatically delete recordings. Disable recording in options or manage old files when appropriate.
+They include normalized source signals, validity, model status and estimates, preserving missing numeric readings as blank fields. Sampling occurs at approximately one-minute resolution and is separate from the more frequent source-change updates. Data is stored locally; the integration does not upload it. Version 0.1.1 does not automatically delete recordings. Disable recording in options or manage old files when appropriate.
 
 The integration does not change heat-pump controls or existing sensors. It requires no extra Python packages, external database, MQTT broker or cloud account.
 
