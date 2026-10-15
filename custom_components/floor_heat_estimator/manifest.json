@@ -1,13 +1,20 @@
 {
   "domain": "floor_heat_estimator",
   "name": "Floor Heat Estimator",
-  "codeowners": ["@andriesvanwijhe"],
+  "after_dependencies": [
+    "recorder"
+  ],
+  "codeowners": [
+    "@andriesvanwijhe"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/andriesvanwijhe/floor-heat-estimator",
   "integration_type": "service",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/andriesvanwijhe/floor-heat-estimator/issues",
-  "requirements": ["scipy==1.18.1"],
-  "version": "0.2.0"
+  "requirements": [
+    "scipy==1.18.1"
+  ],
+  "version": "0.2.1"
 }

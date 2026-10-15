@@ -35,12 +35,14 @@ def configuration_signature(settings):
 
 def read_samples(directory, settings, now, include_legacy=False):
     cutoff = now - settings["learning_days"] * 86400
-    files = list((Path(directory) / "learning" / source_signature(settings)).glob("????-??-??.csv"))
+    folder = Path(directory) / "learning" / source_signature(settings)
+    imported = sorted((folder / "imported").glob("????-??-??.csv"))
+    files = sorted(folder.glob("????-??-??.csv"))
     if include_legacy:
         files += list(Path(directory).glob("????-??-??.csv"))
     samples = {}
     bad_rows = 0
-    for file in sorted(files):
+    for file in imported + sorted(files):
         try:
             day = datetime.fromisoformat(file.stem).date()
             if day < datetime.fromtimestamp(cutoff, UTC).date():
@@ -60,7 +62,7 @@ def read_samples(directory, settings, now, include_legacy=False):
                         ("room_temperature", "heat_input", "supply_temperature", "return_temperature", "flow")),
                         mode=row.get("mode") or None)
                     # Last file wins, so new signed files override overlapping legacy rows.
-                    samples[timestamp] = sample
+                    samples[int(timestamp // 60)] = sample
                 except (ValueError, KeyError, TypeError):
                     bad_rows += 1
                 if len(samples) > 150000:

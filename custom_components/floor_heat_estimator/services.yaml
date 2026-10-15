@@ -28,3 +28,18 @@ reset_parameters:
       selector:
         config_entry:
           integration: floor_heat_estimator
+import_history_and_fit:
+  name: Import history and fit
+  description: Import available detailed Recorder history for the learning window, then fit both models. Live recordings take precedence. Inspect Fit status for the result.
+  fields:
+    entry_id:
+      name: Configuration
+      description: Optional when only one configuration is loaded.
+      selector:
+        config_entry:
+          integration: floor_heat_estimator
+    apply:
+      name: Apply validated results
+      description: Override automatic application for this fit; false previews candidates.
+      selector:
+        boolean:

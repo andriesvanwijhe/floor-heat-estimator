@@ -178,6 +178,7 @@ class FloorFitSensor(FloorSensor):
                     "automatic_learning": (self.coordinator.settings["learning_enabled"]
                                            and self.coordinator.settings["record_samples"]),
                     "apply_fitted_parameters": self.coordinator.settings["apply_fitted_parameters"],
+                    "history_import": self.coordinator.learning.history_import,
                     "report": self.coordinator.learning.report}
         return {"experimental": True}
 

@@ -1,7 +1,7 @@
 """Configuration defaults for the experimental floor heat estimator."""
 
 DOMAIN = "floor_heat_estimator"
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 FIT_KEYS = ("linear_capacity", "linear_conductance", "nonlinear_capacity", "nonlinear_output_at_5k", "exponent")
 SOURCE_KEYS = ("heat_input", "room_temperature", "supply_temperature", "return_temperature", "flow", "mode")
 DEFAULTS = {
@@ -18,6 +18,7 @@ DEFAULTS = {
     "maximum_prediction_hours": 24.0,
     "record_samples": True,
     "learning_enabled": True,
+    "import_history_on_start": True,
     "learning_days": 28.0,
     "refit_interval_days": 7.0,
     "apply_fitted_parameters": True,

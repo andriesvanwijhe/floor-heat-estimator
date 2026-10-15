@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- Import detailed Recorder history once before the first scheduled fit, including existing installations upgrading from 0.2.0.
+- Add an Import history and fit button/action, with preview support and import coverage diagnostics.
+- Query six configured sources in daily read-only batches, preserving historical units, unavailable states, settling and clean Recorder-run boundaries.
+- Persist import completion by source/gate signature; local minute recordings take precedence over imported samples.
+- Keep live estimation running when Recorder history is absent or import fails.
+
 ## 0.2.0
 
 - Add configurable rolling training duration and scheduled refits (default every 7 days).

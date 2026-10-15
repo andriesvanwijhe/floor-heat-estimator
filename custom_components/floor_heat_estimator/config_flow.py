@@ -45,7 +45,7 @@ def parameter_schema(defaults):
         fields[vol.Required(key, default=defaults.get(key, DEFAULTS[key]))] = selector.NumberSelector(
             selector.NumberSelectorConfig(**settings))
     fields[vol.Required("record_samples", default=defaults.get("record_samples", True))] = selector.BooleanSelector()
-    for key in ("learning_enabled", "apply_fitted_parameters"):
+    for key in ("learning_enabled", "apply_fitted_parameters", "import_history_on_start"):
         fields[vol.Required(key, default=defaults.get(key, DEFAULTS[key]))] = selector.BooleanSelector()
     return vol.Schema(fields)
 

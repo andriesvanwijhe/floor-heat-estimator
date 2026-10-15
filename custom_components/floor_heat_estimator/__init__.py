@@ -29,6 +29,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         coordinator.learning.start_fit(call.data.get("include_legacy", False), call.data.get("apply"))
         return {"status": "queued", "entry_id": coordinator.entry.entry_id}
 
+    async def import_history_and_fit(call):
+        coordinator = selected_coordinator(call)
+        coordinator.learning.start_fit(import_history=True, apply=call.data.get("apply"))
+        return {"status": "queued", "entry_id": coordinator.entry.entry_id}
+
     async def reset_parameters(call):
         await selected_coordinator(call).learning.async_reset()
 
@@ -36,6 +41,9 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.services.async_register(DOMAIN, "fit_now", fit_now,
         schema=vol.Schema({**entry_schema, vol.Optional("include_legacy", default=False): bool,
                            vol.Optional("apply"): bool}), supports_response=SupportsResponse.OPTIONAL)
+    hass.services.async_register(DOMAIN, "import_history_and_fit", import_history_and_fit,
+        schema=vol.Schema({**entry_schema, vol.Optional("apply"): bool}),
+        supports_response=SupportsResponse.OPTIONAL)
     hass.services.async_register(DOMAIN, "reset_parameters", reset_parameters, schema=vol.Schema(entry_schema))
     return True
 

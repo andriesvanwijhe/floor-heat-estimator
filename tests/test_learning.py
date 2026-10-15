@@ -45,7 +45,8 @@ model = importlib.import_module("_floor_learning_tests.model")
 
 class LearningTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        settings = {**const.DEFAULTS, **{key: "sensor." + key for key in const.SOURCE_KEYS}}
+        settings = {**const.DEFAULTS, "import_history_on_start": False,
+                    **{key: "sensor." + key for key in const.SOURCE_KEYS}}
         self.parameters = dict(linear_capacity=.4, linear_conductance=.5, nonlinear_capacity=.45,
                                nonlinear_output_at_5k=2.5, exponent=1.4)
         self.result = {"status": "accepted", "accepted": True, "parameters": self.parameters.copy()}
@@ -186,6 +187,77 @@ class LearningTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.manager.active_parameters)
         self.assertIsNone(self.manager.last_attempt)
         self.assertIsNone(self.manager.last_accepted)
+
+    async def test_first_upgrade_import_overrides_old_failed_fit_schedule(self):
+        self.coordinator.settings["import_history_on_start"] = True
+        self.manager.last_attempt = self.manager.started - 300
+        self.manager.start_fit = Mock()
+        self.manager.maybe_schedule(self.manager.started + 61)
+        self.manager.start_fit.assert_called_once_with(import_history=True)
+
+    async def test_import_completion_is_persisted_and_not_repeated_after_restart(self):
+        self.coordinator.settings["import_history_on_start"] = True
+        module = importlib.import_module("_floor_learning_tests.history_import")
+        imported = {"status": "completed", "sample_count": 3000,
+                    "source_signature": learning.source_signature(self.coordinator.settings)}
+        with patch.object(module, "async_import_history", AsyncMock(return_value=imported)) as worker:
+            await self.run_fit(import_history=True)
+        worker.assert_awaited_once()
+        self.assertEqual(self.manager.report["history_import"]["sample_count"], 3000)
+        restored = learning.LearningManager(self.coordinator)
+        restored.signature = self.manager.signature  # a reload starts from configured, not learned, coefficients
+        restored.store.saved = self.manager.store.saved
+        await restored.async_load()
+        self.assertFalse(restored.needs_history_import)
+        self.assertEqual(restored.next_refit - restored.last_attempt, 7 * 86400)
+
+    async def test_manual_parameter_edits_keep_import_marker_but_source_changes_do_not(self):
+        marker = {"status": "completed", "source_signature": learning.source_signature(self.coordinator.settings)}
+        self.manager.history_import = marker
+        await self.manager._save(None)
+        for key, value, retained in (("linear_capacity", .8, True), ("flow_threshold", 150, False)):
+            settings = {**self.coordinator.settings, key: value, "import_history_on_start": True}
+            other = SimpleNamespace(**{**self.coordinator.__dict__, "settings": settings})
+            restored = learning.LearningManager(other)
+            restored.store.saved = self.manager.store.saved
+            await restored.async_load()
+            self.assertEqual(restored.history_import is not None, retained)
+
+    async def test_import_error_fits_existing_recordings_and_does_not_retry_on_every_tick(self):
+        self.coordinator.settings["import_history_on_start"] = True
+        module = importlib.import_module("_floor_learning_tests.history_import")
+        with patch.object(module, "async_import_history", AsyncMock(side_effect=ValueError("Recorder disabled"))):
+            with self.assertLogs(learning._LOGGER, level="ERROR"):
+                await self.run_fit(import_history=True, apply=False)
+        self.assertEqual(self.manager.history_import["status"], "error")
+        self.assertEqual(self.manager.status, "accepted")
+        self.assertFalse(self.manager.needs_history_import)
+        self.assertEqual(self.manager.next_refit - self.manager.last_attempt, 7 * 86400)
+
+    async def test_cancelled_import_does_not_mark_complete_or_fit_partial_import(self):
+        module = importlib.import_module("_floor_learning_tests.history_import")
+        entered = asyncio.Event()
+
+        async def slow_import(*args):
+            entered.set()
+            await asyncio.Event().wait()
+
+        with patch.object(module, "async_import_history", slow_import):
+            self.manager.start_fit(import_history=True)
+            await entered.wait()
+            self.assertEqual(self.manager.status, "importing_history")
+            await self.manager.async_shutdown()
+        self.assertIsNone(self.manager.history_import)
+        self.coordinator.hass.async_add_executor_job.assert_not_called()
+        self.assertFalse(self.manager.importing)
+
+    async def test_explicit_import_works_when_automatic_import_is_disabled(self):
+        module = importlib.import_module("_floor_learning_tests.history_import")
+        imported = {"status": "no_usable_history", "source_signature": learning.source_signature(self.coordinator.settings)}
+        with patch.object(module, "async_import_history", AsyncMock(return_value=imported)) as worker:
+            await self.run_fit(import_history=True)
+        worker.assert_awaited_once()
+        self.assertEqual(self.manager.report["history_import"]["status"], "no_usable_history")
 
 
 if __name__ == "__main__":

@@ -34,7 +34,8 @@
           "refit_interval_days": "Automatic refit interval (days)",
           "maximum_fit_rmse": "Maximum validation temperature error (K)",
           "learning_enabled": "Enable scheduled learning",
-          "apply_fitted_parameters": "Apply validated fitted parameters automatically"
+          "apply_fitted_parameters": "Apply validated fitted parameters automatically",
+          "import_history_on_start": "Import Recorder history once before the first automatic fit"
         }
       }
     },
@@ -80,7 +81,8 @@
           "refit_interval_days": "Automatic refit interval (days)",
           "maximum_fit_rmse": "Maximum validation temperature error (K)",
           "learning_enabled": "Enable scheduled learning",
-          "apply_fitted_parameters": "Apply validated fitted parameters automatically"
+          "apply_fitted_parameters": "Apply validated fitted parameters automatically",
+          "import_history_on_start": "Import Recorder history once before the first automatic fit"
         }
       }
     },
@@ -118,6 +120,20 @@
         "entry_id": {
           "name": "Configuration",
           "description": "Optional when only one configuration is loaded."
+        }
+      }
+    },
+    "import_history_and_fit": {
+      "name": "Import history and fit",
+      "description": "Import available detailed Recorder history for the learning window, then fit both models. Inspect Fit status for the result.",
+      "fields": {
+        "entry_id": {
+          "name": "Configuration",
+          "description": "Optional when only one configuration is loaded."
+        },
+        "apply": {
+          "name": "Apply validated results",
+          "description": "Override automatic application for this fit; false previews candidates."
         }
       }
     }

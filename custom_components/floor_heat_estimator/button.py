@@ -8,7 +8,8 @@ from .const import DOMAIN
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    async_add_entities([FitNowButton(hass.data[DOMAIN][entry.entry_id], entry)])
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities([FitNowButton(coordinator, entry), ImportHistoryButton(coordinator, entry)])
 
 
 class FitNowButton(ButtonEntity):
@@ -24,3 +25,15 @@ class FitNowButton(ButtonEntity):
 
     async def async_press(self):
         self.coordinator.learning.start_fit()
+
+
+class ImportHistoryButton(FitNowButton):
+    _attr_name = "Import history and fit"
+    _attr_icon = "mdi:database-import"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_import_history_and_fit"
+
+    async def async_press(self):
+        self.coordinator.learning.start_fit(import_history=True)

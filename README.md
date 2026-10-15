@@ -2,7 +2,7 @@
 
 An experimental Home Assistant custom integration for estimating heat released by an underfloor heating circuit during heating and cooldown.
 
-Version 0.2.0 adds local, scheduled parameter fitting to the linear and power-law estimators. Models can use manual coefficients or validated learned coefficients. This is the first modelling component of a future house thermal-analysis tool; it currently fits the floor circuit only.
+Version 0.2.1 adds initial Recorder history import to the scheduled parameter fitting introduced in 0.2.0. Models can use manual coefficients or validated learned coefficients. This is the first modelling component of a future house thermal-analysis tool; it currently fits the floor circuit only.
 
 ## What it provides
 
@@ -13,6 +13,7 @@ Version 0.2.0 adds local, scheduled parameter fitting to the linear and power-la
 - State restoration for short restarts, and local minute-sample CSV recording.
 - Configurable rolling learning window and automatic refit interval (default 7 days).
 - Fit-now button/action, preview mode, persistent learned parameters and fit-quality diagnostics.
+- Initial detailed Recorder history import and an Import history and fit button/action.
 
 ## Model and assumptions
 
@@ -92,7 +93,7 @@ If minute recording is enabled, daily UTC CSV files are written under:
 /config/floor_heat_estimator/<config-entry-id>/learning/<source-signature>/YYYY-MM-DD.csv
 ```
 
-They include normalized source signals, validity, model status and estimates, preserving missing numeric readings as blank fields. Sampling occurs at approximately one-minute resolution and is separate from the more frequent source-change updates. Data is stored locally; the integration does not upload it. Version 0.2.0 does not automatically delete recordings. Disable recording in options or manage old files when appropriate.
+They include normalized source signals, validity, model status and estimates, preserving missing numeric readings as blank fields. Sampling occurs at approximately one-minute resolution and is separate from the more frequent source-change updates. Data is stored locally; the integration does not upload it. Recordings are not automatically deleted. Disable recording in options or manage old files when appropriate.
 
 The integration does not change heat-pump controls or existing sensors. Fitting requires SciPy 1.18.1, installed automatically by Home Assistant. It requires no external database, MQTT broker or cloud account.
 
@@ -106,6 +107,7 @@ The integration does not change heat-pump controls or existing sensors. Fitting 
 | Apply validated fitted parameters automatically | On | Off produces preview candidates without changing the active model |
 | Maximum validation temperature error | 1.0 K | Maximum permitted RMSE on later, held-out circulation cycles |
 | Record local minute samples | On | Required for scheduled learning; no estimates are used as training measurements |
+| Import Recorder history once before the first automatic fit | On | Also runs once after upgrading to 0.2.1; imports only available detailed history |
 
 The first automatic attempt is due about one minute after first setup with learning enabled. Subsequent attempts use the stored last-attempt time plus the configured interval. Restarts do not reset the schedule. An early insufficient-data attempt waits until the next interval; use **Fit now** after enough data has accumulated. Disabling recording also suspends automatic scheduling, including for configurations upgraded from older versions.
 
@@ -143,7 +145,7 @@ Reset does not remove training files or disable scheduled learning. Disable sche
 
 ### Existing recordings from version 0.1
 
-No raw history is silently downloaded from Recorder or a cloud service. Fitting uses this integration's normalized local minute CSV recordings. Existing `0.1.x` recordings remain untouched in the parent folder but do not have source/measurement-gate provenance. They are excluded automatically. If their source entities and flow/mode/settling settings are unchanged, explicitly include them in a manual fit:
+Fitting uses normalized local minute CSV recordings, including imported local Recorder history when enabled (see Initial Recorder history import below). No cloud service is queried. Existing `0.1.x` recordings remain untouched in the parent folder but do not have source/measurement-gate provenance. They are excluded automatically. If their source entities and flow/mode/settling settings are unchanged, explicitly include them in a manual fit:
 
 ```yaml
 action: floor_heat_estimator.fit_now
@@ -188,3 +190,24 @@ GitHub Actions additionally runs Home Assistant hassfest and HACS validation. Pe
 
 Before applying estimates to control decisions, compare predicted cooldown and subsequent valid water observations over varied heating cycles. The linear and exponent models are alternatives; their agreement alone is not independent validation.
 
+
+
+### Initial Recorder history import (0.2.1)
+
+Before its first automatic fit, the integration imports available **detailed Recorder history** for the configured learning window. This also runs once after upgrading an existing installation to 0.2.1, even if a prior fit reported insufficient data. It starts in the background about one minute after loading, when scheduled learning and local recording are enabled. The setting **Import Recorder history once before the first automatic fit** disables this behaviour if desired.
+
+Use the device's **Import history and fit** button to import again, or call:
+
+```yaml
+action: floor_heat_estimator.import_history_and_fit
+data:
+  apply: false  # optional: preview without changing active coefficients
+```
+
+The action queues the work; inspect **Fit status** for completion. Its `history_import` attribute reports the requested window, reconstructed sample count, complete sample count, first/last complete sample and entities with no usable history. The fit report separately gives valid observations/cycles and the exact reason if fitting cannot proceed.
+
+Only the six configured entities are read, one day at a time in Recorder's database executor. Values are reconstructed on a minute grid using recorded state changes and historical units. Unchanged values are held; unavailable states are never interpolated or replaced with zero. Brief circulation/availability interruptions conservatively invalidate a minute, restarting settling. Clean Recorder-run boundaries exclude downtime; runs marked as incorrectly closed are conservatively excluded because their actual end is unknown. Recorder cannot reveal unrecorded sensor failures or recover purged history. Sensor configuration/meaning must have remained consistent over the imported period.
+
+Imported CSVs live in `learning/<source-signature>/imported/`, separately from live recordings. Files are replaced atomically and deduplicated by minute, with live samples winning overlaps. Completion (including empty history or errors) is remembered across restart; use the manual action to retry after fixing Recorder or increasing the learning window. Changing source sensors or measurement gates permits a fresh automatic import. Changing only manual model parameters does not repeat the import.
+
+Import reads the local Recorder database through Home Assistant and does not change Recorder configuration or retention. The available period may be shorter than the learning window (Recorder defaults to ten days of detailed history); hourly statistics are insufficient for circulation/settling reconstruction. Missing Recorder or import errors are reported while fitting can still use existing local recordings. Imported history does not bypass fitting quality checks or automatically guarantee acceptance.
