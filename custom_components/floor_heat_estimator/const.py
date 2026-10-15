@@ -1,7 +1,7 @@
 """Configuration defaults for the experimental floor heat estimator."""
 
 DOMAIN = "floor_heat_estimator"
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 SOURCE_KEYS = ("heat_input", "room_temperature", "supply_temperature", "return_temperature", "flow", "mode")
 DEFAULTS = {
     "name": "Floor heat estimator",

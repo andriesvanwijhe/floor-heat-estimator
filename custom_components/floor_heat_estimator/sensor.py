@@ -17,10 +17,24 @@ DESCRIPTIONS = (
     ("observation_age_minutes", "Time since observation", "min", SensorDeviceClass.DURATION),
 )
 
+# Parameters remain readable even when the model has no valid observation.
+PARAMETER_DESCRIPTIONS = (
+    ("linear_conductance", "Linear conductance K", "kW/K"),
+    ("linear_capacity", "Linear thermal inertia C", "kWh/K"),
+    ("nonlinear_capacity", "Exponent thermal inertia C", "kWh/K"),
+    ("exponent", "Heat output exponent", None),
+    ("nonlinear_output_at_5k", "Exponent heat output at 5 K", "kW"),
+    ("linear_time_constant", "Linear time constant", "min"),
+)
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(FloorSensor(coordinator, entry, *description) for description in DESCRIPTIONS)
+    async_add_entities([
+        *(FloorSensor(coordinator, entry, *description) for description in DESCRIPTIONS),
+        *(FloorParameterSensor(coordinator, entry, *description)
+          for description in PARAMETER_DESCRIPTIONS),
+    ])
 
 
 class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
@@ -76,5 +90,39 @@ class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
                 "output_at_5K_kW": settings["nonlinear_output_at_5k"],
                 "coefficient_kW_per_K_to_n": settings["nonlinear_output_at_5k"] / 5 ** settings["exponent"],
                 "capacity_kWh_per_K": settings["nonlinear_capacity"]})
+        return attributes
+
+
+class FloorParameterSensor(FloorSensor):
+    """Expose the configured model coefficients, without requiring live inputs."""
+
+    def __init__(self, coordinator, entry, key, name, unit):
+        device_class = SensorDeviceClass.DURATION if key == "linear_time_constant" else None
+        super().__init__(coordinator, entry, key, name, unit, device_class)
+        self._attr_suggested_display_precision = 2 if key == "linear_time_constant" else 4
+        # Also marks the unitless exponent as numeric for history charts.
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def available(self):
+        # These describe the loaded configuration, independently of telemetry.
+        return True
+
+    @property
+    def native_value(self):
+        settings = self.coordinator.settings
+        if self.key == "linear_time_constant":
+            return 60 * settings["linear_capacity"] / settings["linear_conductance"]
+        return settings[self.key]
+
+    @property
+    def extra_state_attributes(self):
+        attributes = {"experimental": True, "parameter_source": "manual_configuration"}
+        if self.key == "nonlinear_output_at_5k":
+            settings = self.coordinator.settings
+            attributes.update({
+                "exponent": settings["exponent"],
+                "coefficient_kW_per_K_to_n": settings["nonlinear_output_at_5k"] / 5 ** settings["exponent"],
+            })
         return attributes
 
