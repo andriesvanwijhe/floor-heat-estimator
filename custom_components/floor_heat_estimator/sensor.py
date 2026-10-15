@@ -1,5 +1,7 @@
 """Power estimates and model diagnostics."""
 
+from datetime import UTC, datetime
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import EntityCategory, UnitOfPower, UnitOfTemperature
 from homeassistant.helpers.entity import DeviceInfo
@@ -27,6 +29,17 @@ PARAMETER_DESCRIPTIONS = (
     ("linear_time_constant", "Linear time constant", "min"),
 )
 
+FIT_DESCRIPTIONS = (
+    ("fit_status", "Fit status", None),
+    ("last_attempt", "Last fit attempt", None),
+    ("last_accepted", "Last applied fit", None),
+    ("next_refit", "Next automatic fit", None),
+    ("linear_validation_rmse", "Linear validation error", "K"),
+    ("nonlinear_validation_rmse", "Exponent validation error", "K"),
+    ("observation_count", "Fit observation count", None),
+    ("cycle_count", "Fit cycle count", None),
+)
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
@@ -34,6 +47,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         *(FloorSensor(coordinator, entry, *description) for description in DESCRIPTIONS),
         *(FloorParameterSensor(coordinator, entry, *description)
           for description in PARAMETER_DESCRIPTIONS),
+        *(FloorFitSensor(coordinator, entry, *description) for description in FIT_DESCRIPTIONS),
     ])
 
 
@@ -79,7 +93,8 @@ class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
         data = self.coordinator.data
         settings = self.coordinator.settings
         attributes = {"experimental": True, "measurement_valid": data["measurement_valid"],
-                      "model_status": data["status"]}
+                      "model_status": data["status"],
+                      "parameter_source": getattr(self.coordinator, "parameter_source", "manual_configuration")}
         if self.key == "linear_power":
             attributes.update({"conductance_kW_per_K": settings["linear_conductance"],
                 "capacity_kWh_per_K": settings["linear_capacity"],
@@ -117,7 +132,8 @@ class FloorParameterSensor(FloorSensor):
 
     @property
     def extra_state_attributes(self):
-        attributes = {"experimental": True, "parameter_source": "manual_configuration"}
+        attributes = {"experimental": True,
+                      "parameter_source": getattr(self.coordinator, "parameter_source", "manual_configuration")}
         if self.key == "nonlinear_output_at_5k":
             settings = self.coordinator.settings
             attributes.update({
@@ -125,4 +141,43 @@ class FloorParameterSensor(FloorSensor):
                 "coefficient_kW_per_K_to_n": settings["nonlinear_output_at_5k"] / 5 ** settings["exponent"],
             })
         return attributes
+
+
+class FloorFitSensor(FloorSensor):
+    """Fit results and schedule, separate from availability of live estimates."""
+
+    def __init__(self, coordinator, entry, key, name, unit):
+        super().__init__(coordinator, entry, key, name, unit, None)
+        if key in ("last_attempt", "last_accepted", "next_refit"):
+            self._attr_device_class = SensorDeviceClass.TIMESTAMP
+        elif key != "fit_status":
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+            self._attr_suggested_display_precision = 3 if unit else 0
+
+    @property
+    def available(self):
+        return self.native_value is not None
+
+    @property
+    def native_value(self):
+        learning = self.coordinator.learning
+        if self.key == "fit_status":
+            return learning.status
+        if self.key in ("last_attempt", "last_accepted", "next_refit"):
+            value = getattr(learning, self.key)
+            return datetime.fromtimestamp(value, UTC) if value is not None else None
+        if self.key.endswith("validation_rmse"):
+            model = self.key.split("_", 1)[0]
+            return learning.report.get("models", {}).get(model, {}).get("validation_rmse_K")
+        return learning.report.get(self.key)
+
+    @property
+    def extra_state_attributes(self):
+        if self.key == "fit_status":
+            return {"parameter_source": self.coordinator.parameter_source,
+                    "automatic_learning": (self.coordinator.settings["learning_enabled"]
+                                           and self.coordinator.settings["record_samples"]),
+                    "apply_fitted_parameters": self.coordinator.settings["apply_fitted_parameters"],
+                    "report": self.coordinator.learning.report}
+        return {"experimental": True}
 

@@ -11,6 +11,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import DEFAULTS, DOMAIN, SOURCE_KEYS
+from .fitting import source_signature
+from .learning import LearningManager
 from .model import Estimator, Sample, finite_number
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,7 +61,9 @@ class FloorCoordinator(DataUpdateCoordinator):
                          update_interval=timedelta(seconds=60))
         self.entry = entry
         self.settings = {**DEFAULTS, **entry.data, **entry.options}
+        self.configured_settings = self.settings.copy()
         self.engine = Estimator(self.settings)
+        self.learning = LearningManager(self)
         self.last_recorded_minute = None
         self.restored = False
         self.pending_restore = None
@@ -89,6 +93,10 @@ class FloorCoordinator(DataUpdateCoordinator):
                 "gates": {key: self.settings[key] for key in ("active_mode", "flow_threshold", "settling_minutes")},
                 "model_state": self.engine.snapshot()}
 
+    @property
+    def parameter_source(self):
+        return self.learning.parameter_source
+
     async def _async_update_data(self):
         now = dt_util.utcnow()
         states = {key: self.hass.states.get(self.settings[key]) for key in SOURCE_KEYS}
@@ -108,12 +116,13 @@ class FloorCoordinator(DataUpdateCoordinator):
         minute = int(now.timestamp() // 60)
         if self.settings["record_samples"] and minute != self.last_recorded_minute:
             record = {"time_utc": now.isoformat(), **numeric, "mode": mode, **data}
-            directory = self.hass.config.path(DOMAIN, self.entry.entry_id)
+            directory = self.hass.config.path(DOMAIN, self.entry.entry_id, "learning", source_signature(self.settings))
             try:
                 await self.hass.async_add_executor_job(append_record, directory, now, record)
             except OSError:
                 _LOGGER.exception("Could not write floor heat training sample")
             else:
                 self.last_recorded_minute = minute
+        self.learning.maybe_schedule(now.timestamp())
         return data
 

@@ -1,0 +1,30 @@
+fit_now:
+  name: Fit now
+  description: Queue a background fit of both thermal models using the configured rolling learning window. Inspect Fit status for the result.
+  fields:
+    entry_id:
+      name: Configuration
+      description: Optional when only one configuration is loaded.
+      selector:
+        config_entry:
+          integration: floor_heat_estimator
+    include_legacy:
+      name: Include recordings from version 0.1
+      description: Use old recordings only if their source sensors and flow/mode settings match the current configuration. They have no recorded source signature.
+      default: false
+      selector:
+        boolean:
+    apply:
+      name: Apply validated results
+      description: Override the automatic-application setting for this fit. False performs a preview only.
+      selector:
+        boolean:
+reset_parameters:
+  name: Restore manual parameters
+  description: Discard active learned coefficients and restore the configured manual values. Training files remain available. Scheduled learning remains enabled if configured.
+  fields:
+    entry_id:
+      name: Configuration
+      selector:
+        config_entry:
+          integration: floor_heat_estimator

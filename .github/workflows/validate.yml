@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - run: python -m pip install scipy==1.18.1
       - run: python -m unittest discover -s tests -v
       - run: python -m compileall -q custom_components
   hassfest:
@@ -28,3 +29,36 @@ jobs:
         with:
           category: integration
           ignore: brands
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [model, hassfest, hacs]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package and publish validated version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import zipfile
+          from pathlib import Path
+          root = Path('.')
+          version = json.loads(Path('custom_components/floor_heat_estimator/manifest.json').read_text())['version']
+          files = [Path(name) for name in ('README.md', 'LICENSE', 'CHANGELOG.md')]
+          files += [p for p in Path('custom_components').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix in ('.py', '.json', '.yaml')]
+          with zipfile.ZipFile(f'floor-heat-estimator-v{version}.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for path in sorted(files):
+                  archive.write(path, path.as_posix())
+          notes = Path('CHANGELOG.md').read_text().split(f'## {version}\n', 1)[1].split('\n## ', 1)[0].strip()
+          Path('release-notes.md').write_text(notes + '\n\nExperimental thermal model estimates; review fit diagnostics before relying on learned parameters.\n')
+          Path('release-version.txt').write_text(version)
+          PY
+          version=$(cat release-version.txt)
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "Release v$version already exists; leaving it unchanged."
+          else
+            gh release create "v$version" "floor-heat-estimator-v$version.zip" --target "$GITHUB_SHA" --title "Floor Heat Estimator v$version" --notes-file release-notes.md --latest
+          fi

@@ -33,7 +33,7 @@ def load_sensor():
                  "homeassistant.helpers.restore_state", "homeassistant.helpers.update_coordinator"):
         modules[name] = ModuleType(name)
     modules["homeassistant.components.sensor"].SensorDeviceClass = SimpleNamespace(
-        POWER="power", TEMPERATURE="temperature", DURATION="duration")
+        POWER="power", TEMPERATURE="temperature", DURATION="duration", TIMESTAMP="timestamp")
     modules["homeassistant.components.sensor"].SensorEntity = SensorEntity
     modules["homeassistant.components.sensor"].SensorStateClass = SimpleNamespace(MEASUREMENT="measurement")
     modules["homeassistant.const"].EntityCategory = SimpleNamespace(DIAGNOSTIC="diagnostic")
@@ -94,18 +94,33 @@ class ParameterSensorTests(unittest.TestCase):
         status = SENSOR.FloorSensor(self.coordinator, self.entry, "status", "Status", None, None)
         self.assertFalse(hasattr(status, "_attr_suggested_display_precision"))
 
+    def test_learned_parameter_source_and_fit_timestamp_metadata(self):
+        self.coordinator.parameter_source = "learned_fit"
+        self.assertEqual(self.entity("linear_conductance").extra_state_attributes["parameter_source"], "learned_fit")
+        self.coordinator.learning = SimpleNamespace(status="applied", last_attempt=1700000000.,
+            last_accepted=1700000001., next_refit=1700604800., report={"cycle_count": 5,
+            "models": {"linear": {"validation_rmse_K": .4}}})
+        stamp = SENSOR.FloorFitSensor(self.coordinator, self.entry, "last_attempt", "Last fit", None)
+        self.assertEqual(stamp.native_value.timestamp(), 1700000000.)
+        self.assertFalse(hasattr(stamp, "_attr_suggested_display_precision"))
+        error = SENSOR.FloorFitSensor(self.coordinator, self.entry, "linear_validation_rmse", "Error", "K")
+        self.assertEqual(error.native_value, .4)
+        status = SENSOR.FloorFitSensor(self.coordinator, self.entry, "fit_status", "Fit status", None)
+        self.assertEqual(status.native_value, "applied")
+        self.assertTrue(status.available)
+
     def test_nonlinear_coefficient_matches_normalized_model(self):
         entity = self.entity("nonlinear_output_at_5k")
         self.coordinator.settings.update(nonlinear_output_at_5k=2, exponent=2)
         self.assertEqual(entity.native_value, 2)
         self.assertAlmostEqual(entity.extra_state_attributes["coefficient_kW_per_K_to_n"], 0.08)
 
-    def test_setup_adds_six_existing_and_six_parameter_entities_with_unique_ids(self):
+    def test_setup_preserves_existing_entities_and_adds_fit_diagnostics(self):
         entities = []
         hass = SimpleNamespace(data={"floor_heat_estimator": {"example": self.coordinator}})
         asyncio.run(SENSOR.async_setup_entry(hass, self.entry, entities.extend))
-        self.assertEqual(len(entities), 12)
-        self.assertEqual(len({e._attr_unique_id for e in entities}), 12)
+        self.assertEqual(len(entities), 20)
+        self.assertEqual(len({e._attr_unique_id for e in entities}), 20)
         parameter_entities = [e for e in entities if isinstance(e, SENSOR.FloorParameterSensor)]
         self.assertEqual(len(parameter_entities), 6)
         self.assertTrue(all(e._attr_entity_category == "diagnostic" for e in parameter_entities))

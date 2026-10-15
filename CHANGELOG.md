@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+- Add configurable rolling training duration and scheduled refits (default every 7 days).
+- Add a Fit now button/action, preview mode, manual-parameter reset and persistent learned coefficients.
+- Validate both models on later circulation cycles before applying either candidate.
+- Expose fit status, timestamps, validation errors and data-coverage diagnostics.
+- Isolate recording history by source/gate signature; legacy recordings require explicit manual opt-in.
+- Reclassify as a service integration while preserving existing config entries and entity IDs.
+- Add SciPy 1.18.1 for executor-based nonlinear least-squares fitting.
+- Restart settling after observation gaps; accept explicitly null Celsius units during configuration.
+
+
 ## 0.1.2
 
 - Add diagnostic entities for conductance K, both thermal inertias C, exponent,

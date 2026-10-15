@@ -110,6 +110,9 @@ class Estimator:
     def step(self, sample):
         if self.previous and sample.timestamp < self.previous.timestamp:
             raise ValueError("Sample timestamps must be monotonic")
+        gap = sample.timestamp - self.previous.timestamp if self.previous else 0.0
+        if gap > self.settings["maximum_gap_minutes"] * 60:
+            self.active_since = None
         circulating = (sample.mode == self.settings["active_mode"] and sample.flow is not None
                        and sample.flow > self.settings["flow_threshold"])
         if not circulating:
@@ -120,7 +123,6 @@ class Estimator:
                              and sample.return_temperature is not None
                              and sample.timestamp - self.active_since >= self.settings["settling_minutes"] * 60)
         current_input = self._input(sample)
-        gap = sample.timestamp - self.previous.timestamp if self.previous else 0.0
         if self.previous:
             previous_input = self._input(self.previous)
             if (gap > self.settings["maximum_gap_minutes"] * 60 or previous_input is None

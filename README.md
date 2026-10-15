@@ -2,7 +2,7 @@
 
 An experimental Home Assistant custom integration for estimating heat released by an underfloor heating circuit during heating and cooldown.
 
-Version 0.1.2 creates separate linear and power-law estimates from existing sensors. Parameters are entered manually; automatic fitting is planned for a later version.
+Version 0.2.0 adds local, scheduled parameter fitting to the linear and power-law estimators. Models can use manual coefficients or validated learned coefficients. This is the first modelling component of a future house thermal-analysis tool; it currently fits the floor circuit only.
 
 ## What it provides
 
@@ -10,7 +10,9 @@ Version 0.1.2 creates separate linear and power-law estimates from existing sens
 - Effective temperature for each model, in degrees C.
 - Model status and time since the last valid temperature observation.
 - Adjustable heat capacity, conductance, exponent, circulation threshold and settling delay.
-- State restoration for short restarts, and optional local minute-sample CSV recording.
+- State restoration for short restarts, and local minute-sample CSV recording.
+- Configurable rolling learning window and automatic refit interval (default 7 days).
+- Fit-now button/action, preview mode, persistent learned parameters and fit-quality diagnostics.
 
 ## Model and assumptions
 
@@ -35,8 +37,6 @@ This is a heating-only model. Heat input is assumed zero outside the selected he
 Unknown and unavailable inputs are not replaced with zero. If an unobserved interval exceeds the maximum allowed data gap, the state is discarded until a valid temperature observation can initialize it again. Predictions become unavailable when the last observation exceeds the configured age limit. Short restart gaps use the last known input and room temperature; they cannot reconstruct changes that occurred while Home Assistant was stopped.
 
 ## Installation through HACS
-
-Once this repository has been published:
 
 1. In HACS, open Custom repositories.
 2. Add `https://github.com/andriesvanwijhe/floor-heat-estimator`, category **Integration**.
@@ -65,7 +65,7 @@ Accepted units:
 
 Flow thresholds are always entered in l/h; the integration converts source flow units. Temperature differences are always in K after conversion to degrees C.
 
-The second setup page lets you edit model parameters and validity limits. Defaults include 100 l/h circulation, a 10-minute settling period, a 10-minute maximum data gap and a 24-hour maximum prediction age. Use the integration's options to change either sources or parameters later.
+The second setup page lets you edit model parameters and validity limits. Defaults include 100 l/h circulation, a 10-minute settling period, a 10-minute maximum data gap and a 24-hour maximum prediction age. Use the integration's options to change sources, the manual parameter baseline or learning settings later.
 
 Model parameters appear as attributes on the heat-output entities and, since version 0.1.2, as separate diagnostic sensors:
 
@@ -78,7 +78,7 @@ Model parameters appear as attributes on the heat-output entities and, since ver
 | Exponent heat output at 5 K | Q5, the normalized power-law gain | kW |
 | Linear time constant | 60 * C / K, linear cooldown time scale | min |
 
-These parameter sensors are read-only views of the active settings and remain available without live observations. Change them through the helper's configuration options. They update when the helper reloads with new options. The source is explicitly labelled `manual_configuration`; no automatic learning or parameter adaptation occurs. The temperature state is corrected by valid measurements, which is distinct from learning model parameters. Minute recording only collects data for future fitting.
+These parameter sensors are read-only views of the active settings and remain available without live observations. They update after an accepted fit is applied or manual settings change. The `parameter_source` attribute reports `manual_configuration` or `learned_fit`. Manual baseline coefficients remain editable through integration options. Editing manual coefficients or source/measurement-gate settings supersedes stored learned coefficients; changing only learning duration or schedule preserves them.
 
 The nonlinear coefficient can be calculated as `Q5 / 5^n` (also an attribute of the Q5 sensor). Its units depend on n, so Q5 is used as the parameter entity with a stable physical unit. There is no single constant nonlinear time constant: its response changes with temperature difference.
 
@@ -89,16 +89,97 @@ The nonlinear coefficient can be calculated as `Q5 / 5^n` (also an attribute of 
 If minute recording is enabled, daily UTC CSV files are written under:
 
 ```text
-/config/floor_heat_estimator/<config-entry-id>/YYYY-MM-DD.csv
+/config/floor_heat_estimator/<config-entry-id>/learning/<source-signature>/YYYY-MM-DD.csv
 ```
 
-They include normalized source signals, validity, model status and estimates, preserving missing numeric readings as blank fields. Sampling occurs at approximately one-minute resolution and is separate from the more frequent source-change updates. Data is stored locally; the integration does not upload it. Version 0.1.2 does not automatically delete recordings. Disable recording in options or manage old files when appropriate.
+They include normalized source signals, validity, model status and estimates, preserving missing numeric readings as blank fields. Sampling occurs at approximately one-minute resolution and is separate from the more frequent source-change updates. Data is stored locally; the integration does not upload it. Version 0.2.0 does not automatically delete recordings. Disable recording in options or manage old files when appropriate.
 
-The integration does not change heat-pump controls or existing sensors. It requires no extra Python packages, external database, MQTT broker or cloud account.
+The integration does not change heat-pump controls or existing sensors. Fitting requires SciPy 1.18.1, installed automatically by Home Assistant. It requires no external database, MQTT broker or cloud account.
+
+## Learning settings
+
+| Setting | Default | Behavior |
+|---|---|---|
+| Enable scheduled learning | On | Queue a background fit when due; manual fitting also works when disabled |
+| Training history window | 28 days | Rolling lookback, configurable from 2 to 90 days; not a required waiting period |
+| Automatic refit interval | 7 days | 1 to 90 days between attempts, including unsuccessful attempts |
+| Apply validated fitted parameters automatically | On | Off produces preview candidates without changing the active model |
+| Maximum validation temperature error | 1.0 K | Maximum permitted RMSE on later, held-out circulation cycles |
+| Record local minute samples | On | Required for scheduled learning; no estimates are used as training measurements |
+
+The first automatic attempt is due about one minute after first setup with learning enabled. Subsequent attempts use the stored last-attempt time plus the configured interval. Restarts do not reset the schedule. An early insufficient-data attempt waits until the next interval; use **Fit now** after enough data has accumulated. Disabling recording also suspends automatic scheduling, including for configurations upgraded from older versions.
+
+Fitting runs in an executor, with at most one numerical fit running per integration and one queued/running job per entry. The numerical worker has a 120-second budget and checks for unload/cancellation. It never changes heat-pump controls. Learned coefficients and reports are stored locally with Home Assistant's storage helper and restored after restart. Validated fits replace both models together; a rejected or interrupted attempt preserves the previously active coefficients. Live effective temperatures are preserved when new coefficients are applied.
+
+### Manual fit and preview
+
+Press **Fit now** on the Floor heat estimator device, or call the following action in Developer tools > Actions (also usable in automations):
+
+```yaml
+action: floor_heat_estimator.fit_now
+data: {}
+```
+
+With multiple configurations, include `entry_id`, selectable in the action UI. The action queues a job and returns promptly. Read **Fit status** for completion; the optional action response only confirms queuing.
+
+To fit without changing active coefficients:
+
+```yaml
+action: floor_heat_estimator.fit_now
+data:
+  apply: false
+```
+
+Omitting `apply` follows the configured application setting. Explicit `apply: true` applies candidates only if all validation checks pass. The **Fit status** report includes proposed coefficients, per-model training/validation error, baseline validation error, observation/cycle counts and rejection reasons. Parameter sensors continue showing the active values during a preview.
+
+To return to the manually configured baseline:
+
+```yaml
+action: floor_heat_estimator.reset_parameters
+data: {}
+```
+
+Reset does not remove training files or disable scheduled learning. Disable scheduled learning as well if you want to retain manual coefficients indefinitely.
+
+### Existing recordings from version 0.1
+
+No raw history is silently downloaded from Recorder or a cloud service. Fitting uses this integration's normalized local minute CSV recordings. Existing `0.1.x` recordings remain untouched in the parent folder but do not have source/measurement-gate provenance. They are excluded automatically. If their source entities and flow/mode/settling settings are unchanged, explicitly include them in a manual fit:
+
+```yaml
+action: floor_heat_estimator.fit_now
+data:
+  include_legacy: true
+  apply: false
+```
+
+Inspect the report, then run with `apply: true` if appropriate. New recordings are partitioned by source entities and measurement gates so incompatible datasets cannot mix automatically. Changing those settings starts a separate training partition. Old files are retained and can be managed separately. A source changing its physical meaning or units without an entity-ID change cannot be detected from the signature; use a new configuration for a materially different circuit.
+
+### Fit method and minimum evidence
+
+The learner uses bounded, multi-start least squares on **open-loop predicted mean-water temperature** for both models. It recomputes measurement validity from raw flow, operating mode and continuous settling time; it never fits to the integration's own predicted heat output. Unknown driving inputs and gaps terminate a simulation segment. Signed heating input is retained; non-heating modes assume zero input to the floor as in the live model.
+
+Input power and room temperature are time-weighted into approximately five-minute bins. Only valid measured bin endpoints are scored. Traces initialize at a valid measured temperature and are reseeded at most every six hours, not at each scored point. The earliest cycles train the models; the latest approximately 25% of cycles are held out. The validation segment is independently initialized at its first valid measured temperature. No validation targets are used in optimization.
+
+Minimum evidence is four circulation cycles, 120 valid minute observations spanning at least 24 hours, at least 24 training and six held-out five-minute measured endpoints, varied heat input (0.5 kW range) and at least 1.5 K observed temperature-difference variation. These thresholds are screening criteria, not proof of accurate physical identification.
+
+Candidates are rejected if optimization fails, a parameter lies within 1% of its transformed bound, the optimizer Jacobian is poorly conditioned (condition number >= 10,000), validation RMSE exceeds the configured ceiling, or validation is worse than the active model beyond a 5% allowance / 0.05 K numerical-noise floor. Both models must pass before either changes. Sparse or weak early-season data therefore leaves existing parameters intact.
+
+The parameter bounds are the same physical ranges as configuration (C 0.01-100 kWh/K, linear K 0.001-10 kW/K, exponent-model Q5 0.005-100 kW, n 0.5-3); the nonlinear optimizer rejects extremely stiff Q5/C > 150 per hour before simulation. Fits at a bound need investigation rather than automatic application.
+
+Fit status, last attempt, last applied fit, next automatic fit, both validation errors, observation count and cycle count are additional diagnostic entities. Their IDs and the fit-now button use the existing config-entry ID, so upgrading preserves the original 12 sensor IDs.
+
+## Integration type and future house models
+
+Version 0.2.0 uses Home Assistant's **service integration** classification, rather than helper. It appears under **Settings > Devices & services > Integrations** after restart. Existing configuration entries, domain (`floor_heat_estimator`), devices and entity unique IDs remain the same. Do not remove and re-add the integration to upgrade.
+
+A helper was viable for the original small derived-sensor tool. A normal integration better accommodates background learning, persistent model versions, commands and diagnostics. Collection, pure model/fitting code, lifecycle/storage and HA entities now live in separate modules so additional model families can reuse the workflow.
+
+The current learned C and K belong to a **water-temperature proxy model**, not to the whole building. This release does not implement a house heat-loss or building-inertia fit. The intended next model is a room/house energy balance with metered heating input, room temperature and outdoor temperature; solar/internal gains and ventilation can be added as measured inputs or explicit uncertainty. A subsequent coupled floor-room model can represent separate floor and building heat stores. Each model needs independent chronological validation, parameter identifiability checks and clearly labelled units. Estimated floor output must not be treated as independently measured ground truth for a house fit.
 
 ## Development and verification
 
 ```shell
+python -m pip install scipy==1.18.1
 python -m unittest discover -s tests -v
 python -m compileall -q custom_components
 ```

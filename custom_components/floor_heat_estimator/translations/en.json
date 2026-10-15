@@ -18,7 +18,7 @@
       },
       "parameters": {
         "title": "Thermal model settings",
-        "description": "These are experimental estimates based on mean water temperature. Initial parameters are provisional; adjust them for your system.",
+        "description": "Fit both water-temperature models from a rolling training window. Scheduled learning defaults to every 7 days; only candidates passing later-cycle validation can replace the active coefficients. Manual parameter changes restore manual calibration. Disable automatic application for preview fits.",
         "data": {
           "flow_threshold": "Minimum circulation flow (l/h)",
           "settling_minutes": "Settling period after circulation starts (minutes)",
@@ -29,7 +29,12 @@
           "exponent": "Heat-output exponent",
           "maximum_gap_minutes": "Maximum gap between updates (minutes)",
           "maximum_prediction_hours": "Maximum age of temperature observation (hours)",
-          "record_samples": "Record local minute samples for future fitting"
+          "record_samples": "Record local minute samples for fitting",
+          "learning_days": "Training history window (days)",
+          "refit_interval_days": "Automatic refit interval (days)",
+          "maximum_fit_rmse": "Maximum validation temperature error (K)",
+          "learning_enabled": "Enable scheduled learning",
+          "apply_fitted_parameters": "Apply validated fitted parameters automatically"
         }
       }
     },
@@ -37,7 +42,8 @@
       "entity_missing": "The selected entity does not exist.",
       "unsupported_unit": "Unsupported unit. Use W/kW for power, l/h or l/min or m3/h for flow, and C/F for temperatures.",
       "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
-      "invalid_parameter": "Enter a finite number inside the displayed range."
+      "invalid_parameter": "Enter a finite number inside the displayed range.",
+      "learning_requires_recording": "Enable minute sample recording to use scheduled learning."
     }
   },
   "options": {
@@ -58,7 +64,7 @@
       },
       "parameters": {
         "title": "Thermal model settings",
-        "description": "These are experimental estimates based on mean water temperature. Initial parameters are provisional; adjust them for your system.",
+        "description": "Fit both water-temperature models from a rolling training window. Scheduled learning defaults to every 7 days; only candidates passing later-cycle validation can replace the active coefficients. Manual parameter changes restore manual calibration. Disable automatic application for preview fits.",
         "data": {
           "flow_threshold": "Minimum circulation flow (l/h)",
           "settling_minutes": "Settling period after circulation starts (minutes)",
@@ -69,7 +75,12 @@
           "exponent": "Heat-output exponent",
           "maximum_gap_minutes": "Maximum gap between updates (minutes)",
           "maximum_prediction_hours": "Maximum age of temperature observation (hours)",
-          "record_samples": "Record local minute samples for future fitting"
+          "record_samples": "Record local minute samples for fitting",
+          "learning_days": "Training history window (days)",
+          "refit_interval_days": "Automatic refit interval (days)",
+          "maximum_fit_rmse": "Maximum validation temperature error (K)",
+          "learning_enabled": "Enable scheduled learning",
+          "apply_fitted_parameters": "Apply validated fitted parameters automatically"
         }
       }
     },
@@ -77,7 +88,38 @@
       "entity_missing": "The selected entity does not exist.",
       "unsupported_unit": "Unsupported unit. Use W/kW for power, l/h or l/min or m3/h for flow, and C/F for temperatures.",
       "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
-      "invalid_parameter": "Enter a finite number inside the displayed range."
+      "invalid_parameter": "Enter a finite number inside the displayed range.",
+      "learning_requires_recording": "Enable minute sample recording to use scheduled learning."
+    }
+  },
+  "services": {
+    "fit_now": {
+      "name": "Fit now",
+      "description": "Queue a background fit of the floor thermal models. Inspect Fit status for the result.",
+      "fields": {
+        "entry_id": {
+          "name": "Configuration",
+          "description": "Optional when only one configuration is loaded."
+        },
+        "include_legacy": {
+          "name": "Include recordings from version 0.1",
+          "description": "Only use old unsigned recordings if the source sensors and measurement gates match the current configuration."
+        },
+        "apply": {
+          "name": "Apply validated results",
+          "description": "Override automatic application for this fit; false previews candidates."
+        }
+      }
+    },
+    "reset_parameters": {
+      "name": "Restore manual parameters",
+      "description": "Restore configured manual coefficients without removing training files.",
+      "fields": {
+        "entry_id": {
+          "name": "Configuration",
+          "description": "Optional when only one configuration is loaded."
+        }
+      }
     }
   }
 }

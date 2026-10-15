@@ -20,6 +20,9 @@ LIMITS = {
     "exponent": (0.5, 3, None),
     "maximum_gap_minutes": (1, 60, "min"),
     "maximum_prediction_hours": (1, 168, "h"),
+    "learning_days": (2, 90, "d"),
+    "refit_interval_days": (1, 90, "d"),
+    "maximum_fit_rmse": (0.05, 5, "K"),
 }
 
 
@@ -42,6 +45,8 @@ def parameter_schema(defaults):
         fields[vol.Required(key, default=defaults.get(key, DEFAULTS[key]))] = selector.NumberSelector(
             selector.NumberSelectorConfig(**settings))
     fields[vol.Required("record_samples", default=defaults.get("record_samples", True))] = selector.BooleanSelector()
+    for key in ("learning_enabled", "apply_fitted_parameters"):
+        fields[vol.Required(key, default=defaults.get(key, DEFAULTS[key]))] = selector.BooleanSelector()
     return vol.Schema(fields)
 
 
@@ -55,7 +60,7 @@ def validate_sources(hass, values):
             errors[key] = "entity_missing"
         elif key != "mode":
             # Validate units even when the entity is temporarily unavailable.
-            unit = str(state.attributes.get("unit_of_measurement", "")).strip().lower()
+            unit = str(state.attributes.get("unit_of_measurement") or "").strip().lower()
             allowed = ({"kw", "w"} if key == "heat_input" else
                        {"l/h", "l/hr", "l/hour", "l/min", "l/m", "m³/h", "m3/h"} if key == "flow" else
                        {"°c", "c", "°f", "f", ""})
@@ -69,6 +74,8 @@ def validate_parameters(values):
         value = values.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
             return {key: "invalid_parameter"}
+    if values.get("learning_enabled") and not values.get("record_samples"):
+        return {"base": "learning_requires_recording"}
     return {}
 
 
