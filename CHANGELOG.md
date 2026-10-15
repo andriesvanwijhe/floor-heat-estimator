@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- Add diagnostic entities for conductance K, both thermal inertias C, exponent,
+  exponent-model output at 5 K, and the linear time constant.
+- Parameter entities remain available while source readings or estimates are unavailable.
+- Show manual configuration as the parameter source; automatic fitting is not implemented.
+
 ## 0.1.1
 
 - Keep the model-status sensor textual, without numeric display precision.
