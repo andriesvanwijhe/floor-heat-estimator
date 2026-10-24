@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import math
 import os
 from pathlib import Path
+import tempfile
 
 from .const import SOURCE_KEYS
 from .fitting import source_signature
@@ -73,7 +74,7 @@ def reconstruct(history, settings, start, end, runs, cancel):
     return rows
 
 
-def query_day(hass, settings, start, end, cancel):
+def load_history(hass, entity_ids, start, end, cancel):
     """Use Recorder's database executor and history API with historical units."""
     from sqlalchemy import select
     from homeassistant.components.recorder import get_instance, history
@@ -83,7 +84,7 @@ def query_day(hass, settings, start, end, cancel):
     if cancel.is_set():
         raise asyncio.CancelledError
     states = history.get_significant_states(
-        hass, start, end, entity_ids=[settings[key] for key in SOURCE_KEYS],
+        hass, start, end, entity_ids=entity_ids,
         include_start_time_state=True, significant_changes_only=False,
         minimal_response=False, no_attributes=False)
     # Read-only ORM access, never SQLite-specific SQL or direct database files.
@@ -102,6 +103,11 @@ def query_day(hass, settings, start, end, cancel):
                 continue
             right = run.end.replace(tzinfo=UTC).timestamp() if run.end else end.timestamp()
             runs.append((left, right))
+    return states, runs
+
+
+def query_day(hass, settings, start, end, cancel):
+    states, runs = load_history(hass, [settings[key] for key in SOURCE_KEYS], start, end, cancel)
     return reconstruct(states, settings, start.timestamp(), end.timestamp(), runs, cancel)
 
 
@@ -112,9 +118,11 @@ def write_day(directory, settings, day, rows, cancel):
     folder = Path(directory) / "learning" / source_signature(settings) / "imported"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{day}.csv"
-    temporary = target.with_suffix(".tmp")
+    temporary = None
     try:
-        with temporary.open("w", newline="", encoding="utf-8") as stream:
+        with tempfile.NamedTemporaryFile(mode="w", newline="", encoding="utf-8",
+                                         dir=folder, suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
             writer = csv.DictWriter(stream, fieldnames=["time_utc", *SOURCE_KEYS])
             writer.writeheader()
             writer.writerows(rows)
@@ -122,7 +130,8 @@ def write_day(directory, settings, day, rows, cancel):
             raise asyncio.CancelledError
         os.replace(temporary, target)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 async def async_import_history(hass, directory, settings, now, cancel):

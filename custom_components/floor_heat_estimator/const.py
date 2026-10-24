@@ -1,10 +1,13 @@
 """Configuration defaults for the experimental floor heat estimator."""
 
+from .house_const import HOUSE_DEFAULTS
+
 DOMAIN = "floor_heat_estimator"
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 FIT_KEYS = ("linear_capacity", "linear_conductance", "nonlinear_capacity", "nonlinear_output_at_5k", "exponent")
 SOURCE_KEYS = ("heat_input", "room_temperature", "supply_temperature", "return_temperature", "flow", "mode")
 DEFAULTS = {
+    **HOUSE_DEFAULTS,
     "name": "Floor heat estimator",
     "active_mode": "hc",
     "flow_threshold": 100.0,

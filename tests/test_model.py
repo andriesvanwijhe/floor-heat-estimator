@@ -5,12 +5,17 @@ import math
 from pathlib import Path
 import sys
 import unittest
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
+package = ModuleType("_floor_model_tests")
+package.__path__ = [str(ROOT / "custom_components" / "floor_heat_estimator")]
+sys.modules[package.__name__] = package
 for name in ("model", "const"):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "custom_components" / "floor_heat_estimator" / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"{package.__name__}.{name}", ROOT / "custom_components" / "floor_heat_estimator" / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
+    sys.modules[f"{package.__name__}.{name}"] = module
     spec.loader.exec_module(module)
 
 from model import Estimator, Parameters, Sample, advance, finite_number

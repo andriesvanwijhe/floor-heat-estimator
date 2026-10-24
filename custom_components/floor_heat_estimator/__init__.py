@@ -37,6 +37,25 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     async def reset_parameters(call):
         await selected_coordinator(call).learning.async_reset()
 
+    def selected_house(call):
+        house = selected_coordinator(call).house
+        if house is None:
+            raise HomeAssistantError("Enable the house model in integration options first")
+        return house
+
+    async def fit_house_now(call):
+        house = selected_house(call)
+        house.start_fit(apply=call.data.get("apply"))
+        return {"status": "queued", "entry_id": house.entry.entry_id}
+
+    async def import_house_history_and_fit(call):
+        house = selected_house(call)
+        house.start_fit(import_history=True, apply=call.data.get("apply"))
+        return {"status": "queued", "entry_id": house.entry.entry_id}
+
+    async def reset_house_parameters(call):
+        await selected_house(call).async_reset()
+
     entry_schema = {vol.Optional("entry_id"): str}
     hass.services.async_register(DOMAIN, "fit_now", fit_now,
         schema=vol.Schema({**entry_schema, vol.Optional("include_legacy", default=False): bool,
@@ -45,6 +64,13 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         schema=vol.Schema({**entry_schema, vol.Optional("apply"): bool}),
         supports_response=SupportsResponse.OPTIONAL)
     hass.services.async_register(DOMAIN, "reset_parameters", reset_parameters, schema=vol.Schema(entry_schema))
+    for name, handler in (("fit_house_now", fit_house_now),
+                          ("import_house_history_and_fit", import_house_history_and_fit)):
+        hass.services.async_register(DOMAIN, name, handler,
+            schema=vol.Schema({**entry_schema, vol.Optional("apply"): bool}),
+            supports_response=SupportsResponse.OPTIONAL)
+    hass.services.async_register(DOMAIN, "reset_house_parameters", reset_house_parameters,
+                                 schema=vol.Schema(entry_schema))
     return True
 
 
@@ -52,6 +78,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = FloorCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await coordinator.learning.async_load()
+    if coordinator.house:
+        await coordinator.house.async_load()
     await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     coordinator.subscribe()
@@ -65,6 +93,9 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.data[DOMAIN][entry.entry_id].learning.async_shutdown()
+    house = hass.data[DOMAIN][entry.entry_id].house
+    if house:
+        await house.async_shutdown()
     if await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hass.data[DOMAIN].pop(entry.entry_id)
         return True

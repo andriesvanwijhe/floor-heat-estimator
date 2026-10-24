@@ -43,3 +43,43 @@ import_history_and_fit:
       description: Override automatic application for this fit; false previews candidates.
       selector:
         boolean:
+fit_house_now:
+  name: Fit house now
+  description: Fit the two-state house model in a bounded background process. Inspect House fit status for validation and parameter uncertainty.
+  fields:
+    entry_id:
+      name: Configuration
+      description: Optional when only one configuration is loaded.
+      selector:
+        config_entry:
+          integration: floor_heat_estimator
+    apply:
+      name: Apply validated results
+      description: Override automatic application; false previews the candidate without changing active parameters.
+      selector:
+        boolean:
+import_house_history_and_fit:
+  name: Import house history and fit
+  description: Import detailed local history then fit the house model, replaying raw floor measurements with one frozen calibration when the selected heat source belongs to this entry.
+  fields:
+    entry_id:
+      name: Configuration
+      description: Optional when only one configuration is loaded.
+      selector:
+        config_entry:
+          integration: floor_heat_estimator
+    apply:
+      name: Apply validated results
+      description: Override automatic application; false previews the candidate without changing active parameters.
+      selector:
+        boolean:
+reset_house_parameters:
+  name: Restore manual house parameters
+  description: Restore configured manual house coefficients. Training recordings remain available.
+  fields:
+    entry_id:
+      name: Configuration
+      description: Optional when only one configuration is loaded.
+      selector:
+        config_entry:
+          integration: floor_heat_estimator

@@ -13,6 +13,7 @@ from homeassistant.util import dt as dt_util
 from .const import DEFAULTS, DOMAIN, SOURCE_KEYS
 from .fitting import source_signature
 from .learning import LearningManager
+from .house_runtime import HouseManager
 from .model import Estimator, Sample, finite_number
 from .source import numeric_state
 
@@ -41,6 +42,7 @@ class FloorCoordinator(DataUpdateCoordinator):
         self.configured_settings = self.settings.copy()
         self.engine = Estimator(self.settings)
         self.learning = LearningManager(self)
+        self.house = HouseManager(self) if self.settings["house_enabled"] else None
         self.last_recorded_minute = None
         self.restored = False
         self.pending_restore = None
@@ -50,6 +52,9 @@ class FloorCoordinator(DataUpdateCoordinator):
         @callback
         def source_changed(event):
             self.hass.async_create_task(self.async_request_refresh())
+        # House inputs are sampled by the existing minute timer. Subscribing to
+        # this entry's own exponent output would create a refresh feedback loop
+        # while the floor temperature is decaying between measurements.
         self.entry.async_on_unload(async_track_state_change_event(
             self.hass, [self.settings[key] for key in SOURCE_KEYS], source_changed))
 
@@ -100,6 +105,11 @@ class FloorCoordinator(DataUpdateCoordinator):
                 _LOGGER.exception("Could not write floor heat training sample")
             else:
                 self.last_recorded_minute = minute
+        if self.house:
+            try:
+                await self.house.async_update(now, data)
+            except Exception:
+                _LOGGER.exception("House update failed; floor estimation continues")
         self.learning.maybe_schedule(now.timestamp())
         return data
 

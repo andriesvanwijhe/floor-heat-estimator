@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0
+
+- Add an optional house digital twin using the interior/envelope RC model in Bacher & Madsen (2011), Figure 1.
+- Fit interior/envelope heat capacities, two thermal resistances, effective solar area and process/measurement noise by Kalman innovations maximum likelihood.
+- Add hidden envelope temperature, filtered interior temperature, signed heat flows, solar gain, all five physical parameters and three transfer/loss coefficients as entities.
+- Add approximate parameter intervals, conditional envelope-state uncertainty and independent 1/6/24-hour held-out forecast validation.
+- Add separate house learning window, weekly refits, preview/manual/reset actions and a configurable isolated-process fitting time limit (default 15 minutes).
+- Import house Recorder history and replay raw floor history under one frozen calibration for consistent heating input when using this entry's exponent output.
+- Reject insufficient excitation, poorly identified parameters and failed baseline/forecast comparisons; retain accepted coefficients on errors and timeouts.
+- Keep the house feature opt-in, existing floor entity IDs and configuration; add a third setup/options page.
+- Use unique atomic temporary files for history imports and avoid subscribing to the integration's own calculated heat output.
+
 ## 0.2.1
 
 - Import detailed Recorder history once before the first scheduled fit, including existing installations upgrading from 0.2.0.

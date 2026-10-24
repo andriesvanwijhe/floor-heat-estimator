@@ -9,6 +9,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, VERSION
+from .house_data import floor_signature
 
 DESCRIPTIONS = (
     ("linear_power", "Linear heat output", UnitOfPower.KILO_WATT, SensorDeviceClass.POWER),
@@ -49,6 +50,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
           for description in PARAMETER_DESCRIPTIONS),
         *(FloorFitSensor(coordinator, entry, *description) for description in FIT_DESCRIPTIONS),
     ])
+    if getattr(coordinator, "house", None) is not None:
+        from .house_sensor import house_entities
+        async_add_entities(house_entities(coordinator, entry))
 
 
 class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
@@ -104,7 +108,8 @@ class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
             attributes.update({"exponent": settings["exponent"],
                 "output_at_5K_kW": settings["nonlinear_output_at_5k"],
                 "coefficient_kW_per_K_to_n": settings["nonlinear_output_at_5k"] / 5 ** settings["exponent"],
-                "capacity_kWh_per_K": settings["nonlinear_capacity"]})
+                "capacity_kWh_per_K": settings["nonlinear_capacity"],
+                "calibration_signature": floor_signature(settings)})
         return attributes
 
 

@@ -2,7 +2,7 @@
 
 An experimental Home Assistant custom integration for estimating heat released by an underfloor heating circuit during heating and cooldown.
 
-Version 0.2.1 adds initial Recorder history import to the scheduled parameter fitting introduced in 0.2.0. Models can use manual coefficients or validated learned coefficients. This is the first modelling component of a future house thermal-analysis tool; it currently fits the floor circuit only.
+Version 0.3.0 adds an optional, automatically fitted house digital twin using the two-state model in Bacher & Madsen (2011), Figure 1. It includes initial Recorder history import, separate house fitting settings, hidden envelope temperature and physical-parameter entities. Models can use manual coefficients or validated learned coefficients. This is the first modelling component of a future house thermal-analysis tool; it currently fits the floor circuit only.
 
 ## What it provides
 
@@ -211,3 +211,124 @@ Only the six configured entities are read, one day at a time in Recorder's datab
 Imported CSVs live in `learning/<source-signature>/imported/`, separately from live recordings. Files are replaced atomically and deduplicated by minute, with live samples winning overlaps. Completion (including empty history or errors) is remembered across restart; use the manual action to retry after fixing Recorder or increasing the learning window. Changing source sensors or measurement gates permits a fresh automatic import. Changing only manual model parameters does not repeat the import.
 
 Import reads the local Recorder database through Home Assistant and does not change Recorder configuration or retention. The available period may be shorter than the learning window (Recorder defaults to ten days of detailed history); hourly statistics are insufficient for circulation/settling reconstruction. Missing Recorder or import errors are reported while fitting can still use existing local recordings. Imported history does not bypass fitting quality checks or automatically guarantee acceptance.
+
+
+## House digital twin (0.3.0)
+
+The optional house model uses the RC network in **Figure 1**, equations (1)–(3), of [Bacher & Madsen, Identifying suitable models for the heat dynamics of buildings (2011)](https://henrikmadsen.org/wp-content/uploads/2014/05/Journal_article_-_2011_-_Identifying_suitable_models_for_the_heat_dynamics_of_buildings.pdf). It is a two-state interior/envelope model, not the five-state model elsewhere in that paper and not an implementation of automatic model-structure selection.
+
+```text
+                 Q_floor + A_solar × G
+                           ↓
+                  Ti [Ci] ── Rie ── Te [Ce] ── Rea ── Ta
+
+Ci dTi/dt = (Te - Ti)/Rie + Q_floor + A_solar G
+Ce dTe/dt = (Ti - Te)/Rie + (Ta - Te)/Rea
+observed room temperature = Ti + measurement noise
+```
+
+The model includes independent interior/envelope temperature process noise and room measurement noise. All three noise scales are fitted as nuisance parameters. Time is hours, power kW, capacities kWh/K and resistances K/kW. `G` is internally kW/m²; the fitted area is in m². Exact constant-input state transitions and process-noise covariance integrals are used rather than Euler integration.
+
+### Enable after upgrading
+
+1. Update in HACS and restart Home Assistant.
+2. Open **Settings → Devices & services → Floor Heat Estimator → Configure**.
+3. Keep your existing floor source sensors and settings, then continue to the new **House digital twin** page.
+4. Enable the house model and confirm the heat, outdoor-temperature and solar entities. The existing room-temperature entity from the first page is the interior thermometer.
+5. Save. After about two minutes the first background history import/fit is due when house learning and local recording are enabled. Inspect **House fit status**. Use **Import house history and fit** to retry manually.
+
+Existing entries default to house disabled, preserving the existing floor behavior. The offered heat source is `sensor.floor_heat_estimator_exponent_heat_output`, outdoor source `sensor.ebusd_broadcast_outsidetemp_2`, and solar source `sensor.open_meteo_global_solar_radiation`; choose the actual entity IDs in your installation if renamed. Every configuration keeps its own parameters, histories and diagnostics.
+
+The house model consumes the heat actually released by the floor, including cooldown. It does **not** apply another space-heating/flow gate to that output. If its selected heat source belongs to the same integration entry, live input uses the same newly calculated exponent output without a sensor-publication delay or state-change feedback subscription. Sources are recorded once per minute and live filtering processes completed five-minute bins.
+
+### House settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| House digital twin | Off | Opt-in for existing and new configurations |
+| House training window | 28 days | Configurable 7–90 days |
+| House refit interval | 7 days | Independent of floor refitting; configurable 1–90 days |
+| House fitting time limit | 15 minutes | Configurable 1–60 minutes for the numerical worker |
+| Maximum validation error | 1 K | Applied to both 6-hour and 24-hour held-out forecast RMSE |
+| Maximum source gap | 10 minutes | Larger gaps break input sequences; incomplete driver bins are rejected |
+| Scheduled house fitting | On | Requires local recording; can be disabled independently |
+| Apply fitted house parameters | On | Disable for preview-only candidate reports |
+| Initial house history import | On | Imports detailed local history once before first automatic fit |
+
+Manual starting guesses are Ci=5 kWh/K, Ce=30 kWh/K, Rie=1 K/kW, Rea=4 K/kW, and solar area=10 m². They are **not fitted properties of your house**. Parameter entities explicitly label `manual_configuration` until a validated fit is applied. Editing those manual values resets the active house calibration; editing only the learning window or schedule preserves it.
+
+### History and heat-input provenance
+
+Detailed Recorder history of room temperature, outdoor temperature, heating output and solar irradiance is imported in daily read-only batches. Recorder downtime and incorrectly closed runs are treated conservatively; missing values remain missing. Five-minute bins integrate held power/solar/outdoor values over actual seconds and use an endpoint room reading available by that endpoint. Missing solar is never interpreted as a dark night. Source gaps or calibration changes break usable sequences. Hourly statistics cannot reconstruct detailed source availability.
+
+When the selected heating entity belongs to this entry, house fitting replays the stored **raw floor sensor history** with one frozen floor calibration, creating a consistent input across the window. Initial house import also attempts to import the necessary raw floor history. Raw replay requires that the configured floor sources/gates describe that historical period. Missing raw readings remain missing even if an old estimated-output sensor had a value. This avoids silently combining heating estimates produced by different floor calibrations.
+
+For an external heating entity, use its recorded values. A `calibration_signature` attribute is honored if provided, with changes splitting bins. Unversioned external heat is explicitly reported as calibration-not-verified. Changing source sensors or gates partitions histories. A new floor calibration triggers a new house fit attempt when automatic learning is on. Until a replacement passes, the accepted model remains active and the entity attribute `floor_calibration_changed` flags the mismatch.
+
+House minute CSVs live in `/config/floor_heat_estimator/<entry-id>/house/<source-signature>/`. Imported CSVs are in its `imported/` subfolder. Live samples win minute overlaps. No personal history is uploaded, no Recorder configuration is changed, and no automatic history-file retention is imposed. The available period is limited by Recorder retention (often ten days) and how long the new solar entity has existed. Failed/empty imports are remembered; use the import button/action to retry after fixing the data source.
+
+### Fitting and validation
+
+Maximum likelihood is calculated from Kalman innovations. Positive parameters are optimized in log coordinates with multiple starts. Physical dynamics are initialized with fixed noise scales before optimizing the physical and noise parameters together; this reduces convergence to a poor RC model masked by high process noise. Each segment starts with a diffuse envelope-state covariance, and its first six hours are filtered but excluded from the fitting likelihood.
+
+Initial eligibility requires at least 6.9 days of span and 80% of seven days' measured five-minute observations. The latest 25% of the window, or at least two days, is withheld. There must be at least three training days and two validation days at 80% coverage. Training must include at least 0.5 K room variation, 3 K outdoor variation, 0.5 kW heat-input variation, 50 W/m² solar variation, and at least two hours each of sunny and dark bins. These are screening rules, not evidence of unique physical parameters by themselves.
+
+Acceptance requires convergence, physical parameters away from bounds, adequate observed-information identifiability, and passing later-day forecast checks. Parameter covariance is approximated from the numerical likelihood Hessian in log coordinates, marginalizing the nuisance noise scales. Ill-conditioned, non-positive information or log standard errors above 1.1 reject a fit rather than publish precise-looking learned values.
+
+Forecasts are launched hourly from filter states using only room observations available at each origin. They then run **without future room-temperature corrections** over 1, 6 and 24 hours. Historical future heat/outdoor/solar inputs are used: these are conditional retrospective validation errors, not the error expected with uncertain future weather/heating forecasts. Each horizon needs at least four valid forecasts. Both 6-hour and 24-hour RMSE must pass the ceiling, not exceed the active-model RMSE by more than 5% (with a 0.1 K floor), and beat or match a persistence baseline (also with a 0.1 K floor). Signed bias and standardized innovation lag-one correlation are reported too.
+
+Rejected, insufficient, timed-out and failed fits preserve the active coefficients. Preview reports do not replace active coefficients or their confidence intervals. Learned values are verified in persistent storage before activation. A house fit is discarded if the floor calibration changed while it ran. Short-restart model state is saved separately; stale or incompatible snapshots are discarded.
+
+### House entities
+
+Enabling adds 22 diagnostic sensors and three buttons on the existing device. Existing floor entity unique IDs are unchanged.
+
+| Entity name | Unit / interpretation |
+|---|---|
+| House envelope temperature | °C; inferred hidden Te, not a measured wall temperature |
+| House estimated interior temperature | °C; filtered Ti, alongside the original thermometer |
+| House envelope temperature standard uncertainty | K; conditional Kalman state standard deviation |
+| House estimated solar gain | kW; effective area × irradiance |
+| House interior to envelope heat flow | kW; (Ti−Te)/Rie, signed |
+| House envelope to outdoor heat flow | kW; (Te−Ta)/Rea, signed |
+| House interior / envelope heat capacity | kWh/K; Ci and Ce |
+| House interior envelope / envelope outdoor resistance | K/kW; Rie and Rea |
+| House effective solar area | m²; fitted solar-gain factor |
+| House interior envelope / envelope outdoor transfer coefficient | W/K; 1000/Rie and 1000/Rea |
+| House overall heat loss coefficient | W/K; 1000/(Rie+Rea) |
+| House fit status | Latest attempt, reason, input provenance, coverage and candidate report |
+| House last fit attempt / last applied fit / next automatic fit | UTC timestamps |
+| House 1 / 6 / 24 hour validation error | K; temperature prediction RMSE |
+| House fit observation count | Measured five-minute observations in the last attempt |
+
+Each physical-parameter entity has `parameter_source` and last-applied-fit attributes. Approximate 95% intervals are attached to accepted physical parameters; transfer-coefficient intervals are transformed from the corresponding resistance intervals. The overall heat-loss coefficient is not a per-area U-value, and it does not separate fabric from ventilation losses. Heat capacities and Te are effective lumped quantities for this model.
+
+### House actions
+
+The device buttons are **Fit house now**, **Import house history and fit**, and **Restore manual house parameters**. Corresponding actions work in Developer tools and automations:
+
+```yaml
+action: floor_heat_estimator.import_house_history_and_fit
+data:
+  apply: false  # optional: preview; omit to use the house setting
+```
+
+```yaml
+action: floor_heat_estimator.fit_house_now
+data: {}
+```
+
+```yaml
+action: floor_heat_estimator.reset_house_parameters
+data: {}
+```
+
+Specify `entry_id` when multiple configurations are loaded. Actions queue work and return promptly; **House fit status** reports completion. House and floor fits share a per-integration lock. House numerical optimization runs in a separate Python process with numerical-library threads limited to one. Timeout and unload terminate the worker; live model updates remain in Home Assistant. The fitting limit excludes history import/preparation. Import errors are reported and fitting can still use existing local files.
+
+### Interpretation and limitations
+
+The model treats the thermostat as representative of the modelled interior zone. Other heaters, cooking, occupants, open windows, changing ventilation and weather-data errors can bias its coefficients. Heating output is itself a floor-model estimate that uses room temperature; this introduces input uncertainty and dependence that the independent-noise model only approximates. The reported confidence intervals and state uncertainty therefore do not include every source of uncertainty and are not a calibration certificate.
+
+The effective solar area includes orientation, shading and transmission effects; it is not the actual window area. Confirm that the solar sensor reports irradiance with meaningful observation timestamps. W/m² and kW/m² are supported; energy totals such as kWh/m² are rejected. Values are held according to their recorded timestamps: preceding-hour averages are **not** automatically shifted or deconvolved, and coarse source timing can bias the fitted solar response. Purged or never-recorded solar history cannot be reconstructed by the integration.
+
+Synthetic tests verify exact state/diffusion propagation against an independent matrix exponential and recover known stochastic model parameters. These checks do not establish the accuracy of a fit on your house. Runtime depends on training coverage and convergence. A synthetic nine-day fit took about 14 seconds with three starts on the development computer; this is not a benchmark of the HP thin client. Use the elapsed-time diagnostics and configurable time limit to assess your own installation.

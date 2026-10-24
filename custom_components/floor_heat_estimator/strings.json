@@ -37,6 +37,29 @@
           "apply_fitted_parameters": "Apply validated fitted parameters automatically",
           "import_history_on_start": "Import Recorder history once before the first automatic fit"
         }
+      },
+      "house": {
+        "title": "House digital twin (optional)",
+        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m\u00b2 or kW/m\u00b2. Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled.",
+        "data": {
+          "house_enabled": "Enable house digital twin",
+          "house_heat_input": "Heat delivered to the house (exponent floor output)",
+          "house_outdoor_temperature": "Outdoor temperature",
+          "house_solar": "Global solar irradiance",
+          "house_ci": "Manual interior heat capacity (kWh/K)",
+          "house_ce": "Manual envelope heat capacity (kWh/K)",
+          "house_rie": "Manual interior-envelope resistance (K/kW)",
+          "house_rea": "Manual envelope-outdoor resistance (K/kW)",
+          "house_solar_area": "Manual effective solar area (m\u00b2)",
+          "house_learning_days": "House training window (days)",
+          "house_refit_interval_days": "House refit interval (days)",
+          "house_max_fit_minutes": "House fitting time limit (minutes)",
+          "house_max_fit_rmse": "Maximum 6/24-hour validation RMSE (K)",
+          "house_max_gap_minutes": "Maximum house input gap (minutes)",
+          "house_learning_enabled": "Enable scheduled house fitting",
+          "house_apply_fitted_parameters": "Apply validated house parameters automatically",
+          "house_import_history_on_start": "Import house history before the first automatic fit"
+        }
       }
     },
     "error": {
@@ -44,7 +67,8 @@
       "unsupported_unit": "Unsupported unit. Use W/kW for power, l/h or l/min or m3/h for flow, and C/F for temperatures.",
       "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
       "invalid_parameter": "Enter a finite number inside the displayed range.",
-      "learning_requires_recording": "Enable minute sample recording to use scheduled learning."
+      "learning_requires_recording": "Enable minute sample recording to use scheduled learning.",
+      "house_unsupported_unit": "Use W/kW for heat, \u00b0C/\u00b0F for outdoor temperature, and W/m\u00b2 or kW/m\u00b2 for solar irradiance."
     }
   },
   "options": {
@@ -84,6 +108,29 @@
           "apply_fitted_parameters": "Apply validated fitted parameters automatically",
           "import_history_on_start": "Import Recorder history once before the first automatic fit"
         }
+      },
+      "house": {
+        "title": "House digital twin (optional)",
+        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m\u00b2 or kW/m\u00b2. Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled.",
+        "data": {
+          "house_enabled": "Enable house digital twin",
+          "house_heat_input": "Heat delivered to the house (exponent floor output)",
+          "house_outdoor_temperature": "Outdoor temperature",
+          "house_solar": "Global solar irradiance",
+          "house_ci": "Manual interior heat capacity (kWh/K)",
+          "house_ce": "Manual envelope heat capacity (kWh/K)",
+          "house_rie": "Manual interior-envelope resistance (K/kW)",
+          "house_rea": "Manual envelope-outdoor resistance (K/kW)",
+          "house_solar_area": "Manual effective solar area (m\u00b2)",
+          "house_learning_days": "House training window (days)",
+          "house_refit_interval_days": "House refit interval (days)",
+          "house_max_fit_minutes": "House fitting time limit (minutes)",
+          "house_max_fit_rmse": "Maximum 6/24-hour validation RMSE (K)",
+          "house_max_gap_minutes": "Maximum house input gap (minutes)",
+          "house_learning_enabled": "Enable scheduled house fitting",
+          "house_apply_fitted_parameters": "Apply validated house parameters automatically",
+          "house_import_history_on_start": "Import house history before the first automatic fit"
+        }
       }
     },
     "error": {
@@ -91,7 +138,8 @@
       "unsupported_unit": "Unsupported unit. Use W/kW for power, l/h or l/min or m3/h for flow, and C/F for temperatures.",
       "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
       "invalid_parameter": "Enter a finite number inside the displayed range.",
-      "learning_requires_recording": "Enable minute sample recording to use scheduled learning."
+      "learning_requires_recording": "Enable minute sample recording to use scheduled learning.",
+      "house_unsupported_unit": "Use W/kW for heat, \u00b0C/\u00b0F for outdoor temperature, and W/m\u00b2 or kW/m\u00b2 for solar irradiance."
     }
   },
   "services": {
@@ -134,6 +182,44 @@
         "apply": {
           "name": "Apply validated results",
           "description": "Override automatic application for this fit; false previews candidates."
+        }
+      }
+    },
+    "fit_house_now": {
+      "name": "Fit house now",
+      "description": "Run this house-model action in the background. Inspect House fit status for the result.",
+      "fields": {
+        "entry_id": {
+          "name": "Configuration",
+          "description": "Optional when only one configuration is loaded."
+        },
+        "apply": {
+          "name": "Apply validated results",
+          "description": "Override automatic application for this fit; false previews candidates."
+        }
+      }
+    },
+    "import_house_history_and_fit": {
+      "name": "Import house history and fit",
+      "description": "Run this house-model action in the background. Inspect House fit status for the result.",
+      "fields": {
+        "entry_id": {
+          "name": "Configuration",
+          "description": "Optional when only one configuration is loaded."
+        },
+        "apply": {
+          "name": "Apply validated results",
+          "description": "Override automatic application for this fit; false previews candidates."
+        }
+      }
+    },
+    "reset_house_parameters": {
+      "name": "Restore manual house parameters",
+      "description": "Run this house-model action in the background. Inspect House fit status for the result.",
+      "fields": {
+        "entry_id": {
+          "name": "Configuration",
+          "description": "Optional when only one configuration is loaded."
         }
       }
     }
