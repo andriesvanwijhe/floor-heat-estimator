@@ -40,7 +40,7 @@
       },
       "house": {
         "title": "House digital twin (optional)",
-        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m\u00b2 or kW/m\u00b2. Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled.",
+        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m\u00b2 or kW/m\u00b2. Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled. Combined occupancy and electrical heat gain enters the interior as a fitted constant, initially 500 W.",
         "data": {
           "house_enabled": "Enable house digital twin",
           "house_heat_input": "Heat delivered to the house (exponent floor output)",
@@ -58,7 +58,8 @@
           "house_max_gap_minutes": "Maximum house input gap (minutes)",
           "house_learning_enabled": "Enable scheduled house fitting",
           "house_apply_fitted_parameters": "Apply validated house parameters automatically",
-          "house_import_history_on_start": "Import house history before the first automatic fit"
+          "house_import_history_on_start": "Import house history before the first automatic fit",
+          "house_internal_gain": "Manual occupancy and electrical heat gain (W)"
         }
       }
     },
@@ -111,7 +112,7 @@
       },
       "house": {
         "title": "House digital twin (optional)",
-        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m\u00b2 or kW/m\u00b2. Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled.",
+        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m\u00b2 or kW/m\u00b2. Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled. Combined occupancy and electrical heat gain enters the interior as a fitted constant, initially 500 W.",
         "data": {
           "house_enabled": "Enable house digital twin",
           "house_heat_input": "Heat delivered to the house (exponent floor output)",
@@ -129,7 +130,8 @@
           "house_max_gap_minutes": "Maximum house input gap (minutes)",
           "house_learning_enabled": "Enable scheduled house fitting",
           "house_apply_fitted_parameters": "Apply validated house parameters automatically",
-          "house_import_history_on_start": "Import house history before the first automatic fit"
+          "house_import_history_on_start": "Import house history before the first automatic fit",
+          "house_internal_gain": "Manual occupancy and electrical heat gain (W)"
         }
       }
     },

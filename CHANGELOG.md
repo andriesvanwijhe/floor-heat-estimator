@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- Add a fitted constant occupancy/electrical-device heat gain directly to the house interior node, with a 500 W manual starting value.
+- Expose House internal heat gain in W and its approximate fitted confidence interval; add the manual value to house options (0–5000 W).
+- Extend joint maximum-likelihood fitting and identifiability checks to six physical coefficients, allowing zero internal gain.
+- Invalidate prior house calibrations under the changed heat-balance model, preserving floor operation and all training recordings.
+
 ## 0.3.0
 
 - Add an optional house digital twin using the interior/envelope RC model in Bacher & Madsen (2011), Figure 1.

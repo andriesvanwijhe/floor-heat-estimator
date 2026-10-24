@@ -22,6 +22,7 @@ DESCRIPTIONS = (
     ("house_rie", "House interior envelope resistance", "K/kW"),
     ("house_rea", "House envelope outdoor resistance", "K/kW"),
     ("house_solar_area", "House effective solar area", "m²"),
+    ("house_internal_gain", "House internal heat gain", "W"),
     ("house_hie", "House interior envelope transfer coefficient", "W/K"),
     ("house_hea", "House envelope outdoor transfer coefficient", "W/K"),
     ("house_heat_loss_coefficient", "House overall heat loss coefficient", "W/K"),
@@ -59,7 +60,7 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
             self._attr_suggested_display_precision = 0 if key == "house_point_count" else 3
             if unit == "°C":
                 self._attr_device_class = SensorDeviceClass.TEMPERATURE
-            elif unit == "kW":
+            elif unit in ("kW", "W"):
                 self._attr_device_class = SensorDeviceClass.POWER
 
     @property
@@ -77,7 +78,7 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self):
         manager = self.coordinator.house
         attributes = {"experimental": True, "parameter_source": manager.parameter_source,
-                      "model": "Bacher & Madsen (2011), Figure 1",
+                      "model": "Bacher & Madsen (2011), Figure 1 + constant internal gain",
                       "floor_calibration_changed": bool(manager.own_heat_source and manager.calibrated_floor
                           and manager.calibrated_floor != floor_signature(manager.settings)),
                       "last_applied_fit": datetime.fromtimestamp(manager.last_accepted, UTC).isoformat()
@@ -95,7 +96,11 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
         parameter = self.key.removeprefix("house_")
         interval = manager.active_intervals.get(parameter)
         if interval:
-            attributes["approximate_95_percent_interval"] = interval
+            attributes["approximate_95_percent_interval"] = (
+                {"lower_95": 1000*interval["lower_95"], "upper_95": 1000*interval["upper_95"],
+                 "unit": "W"} if parameter == "internal_gain" else interval)
+        if parameter == "internal_gain":
+            attributes["interpretation"] = "Fitted constant combined occupancy and electrical-device heat gain into the interior node"
         resistance = {"house_hie": "rie", "house_hea": "rea"}.get(self.key)
         if resistance and resistance in manager.active_intervals:
             interval = manager.active_intervals[resistance]

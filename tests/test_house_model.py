@@ -60,18 +60,31 @@ class HouseMathTests(unittest.TestCase):
     def test_constant_input_equilibrium_satisfies_both_heat_balances(self):
         p = model.HouseParameters()
         outdoor, heat, solar = 5, 2, .2
-        power = heat+p.solar_area*solar
+        power = heat+p.solar_area*solar+p.internal_gain
         equilibrium = (outdoor+(p.rie+p.rea)*power, outdoor+p.rea*power)
         result = model.advance(equilibrium, outdoor, heat, solar, p, model.transition(p, 24))
         self.assertAlmostEqual(result[0], equilibrium[0], places=10)
         self.assertAlmostEqual(result[1], equilibrium[1], places=10)
 
     def test_zero_heat_approaches_outdoor_and_signed_heat_is_preserved(self):
-        p = model.HouseParameters()
+        p = model.HouseParameters(internal_gain=0)
         cooled = model.advance((22,20), 5, 0, 0, p, model.transition(p, 2000))
         extracted = model.advance((22,20), 5, -2, 0, p, model.transition(p, 2000))
         self.assertAlmostEqual(cooled[0], 5, places=2)
         self.assertLess(extracted[0], 5)
+
+    def test_internal_gain_defaults_to_500w_and_enters_interior_only(self):
+        p = model.HouseParameters()
+        self.assertEqual(p.internal_gain,.5)
+        hours = 1e-5
+        warmed = model.advance((20,20),20,0,0,p,model.transition(p,hours))
+        self.assertAlmostEqual((warmed[0]-20)/hours,p.internal_gain/p.ci,delta=1e-5)
+        self.assertLess(abs(warmed[1]-20)/hours,1e-6)
+
+    def test_internal_gain_may_be_zero_but_not_negative_or_boolean(self):
+        self.assertEqual(model.HouseParameters(internal_gain=0).internal_gain,0)
+        for value in (-.1,True,float('nan')):
+            with self.assertRaises(ValueError):model.HouseParameters(internal_gain=value)
 
     def test_filter_updates_hidden_state_without_replacing_it_with_room(self):
         estimator = model.HouseEstimator()
@@ -99,6 +112,18 @@ class HouseMathTests(unittest.TestCase):
         self.assertTrue(restored.restore(estimator.snapshot()))
         self.assertEqual(restored.state, estimator.state)
         self.assertFalse(restored.restore({"timestamp":1000,"state":[21,19],"covariance":[1,5,1]}))
+
+    def test_observed_information_at_zero_gain_matches_analytic_curvature(self):
+        import numpy as np
+        size=len(fitting.PARAMETERS)
+        truth=np.diag(np.arange(1,size+1,dtype=float))
+        truth[0,fitting.GAIN_INDEX]=truth[fitting.GAIN_INDEX,0]=.2
+        values=np.linspace(.1,.9,size)
+        values[fitting.GAIN_INDEX]=0
+        def objective(x):
+            self.assertGreaterEqual(x[fitting.GAIN_INDEX],0)
+            return float(.5*x@truth@x)
+        np.testing.assert_allclose(fitting.observed_information(objective,values),truth,atol=1e-7)
 
 
 class HouseIdentificationTests(unittest.TestCase):
@@ -133,14 +158,27 @@ class HouseIdentificationTests(unittest.TestCase):
     def test_fitting_recovers_physical_coefficients_and_passes_held_out_forecasts(self):
         baseline = self.truth.to_dict()
         baseline.update(ci=1.4, ce=6, rie=.55, rea=3.1, solar_area=4.5,
-                        sigma_i=.03, sigma_e=.015, sigma_y=.08)
+                        internal_gain=.2, sigma_i=.03, sigma_e=.015, sigma_y=.08)
         result = fitting.fit_house({"points":self.points,"baseline":baseline,"starts":1,
                                     "max_iterations":220,"max_seconds":120,"maximum_rmse":1})
         self.assertTrue(result["accepted"], result)
         for key in ("ci","ce","rie","rea","solar_area"):
             self.assertAlmostEqual(result["parameters"][key], getattr(self.truth,key), delta=getattr(self.truth,key)*.1)
             self.assertGreater(result["approximate_confidence_intervals"][key]["upper_95"], 0)
+        # The constant gain is correlated with overall heat loss. On this
+        # finite noisy record, require recovery within 100 W and coverage by
+        # the reported interval rather than asserting false 10% precision.
+        self.assertAlmostEqual(result['parameters']['internal_gain'],self.truth.internal_gain,delta=.1)
+        interval=result['approximate_confidence_intervals']['internal_gain']
+        self.assertLess(interval['lower_95'],self.truth.internal_gain)
+        self.assertGreater(interval['upper_95'],self.truth.internal_gain)
         self.assertLess(result["validation"]["24"]["rmse_K"], .15)
+
+    def test_optimizer_coordinates_preserve_an_exact_zero_internal_gain(self):
+        p=model.HouseParameters(internal_gain=0)
+        restored=fitting.unpack(fitting.pack(p))
+        self.assertEqual(restored.internal_gain,0)
+        self.assertEqual(fitting.BOUNDS[fitting.GAIN_INDEX],(0,5))
 
 
 if __name__ == '__main__':

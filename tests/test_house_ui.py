@@ -65,6 +65,7 @@ class HouseUITests(unittest.TestCase):
         self.assertFalse(self.defaults['house_enabled'])
         self.assertEqual(self.defaults['house_refit_interval_days'],7)
         self.assertEqual(self.defaults['house_max_fit_minutes'],15)
+        self.assertEqual(self.defaults['house_internal_gain'],500)
 
     def test_house_validation_accepts_units_without_requiring_current_readings(self):
         values={**house_const.HOUSE_DEFAULTS,'house_enabled':True}
@@ -98,8 +99,8 @@ class HouseUITests(unittest.TestCase):
             engine=SimpleNamespace(timestamp=None),active_intervals={})
         coordinator=SimpleNamespace(house=manager)
         entities=sensor.house_entities(coordinator,SimpleNamespace(entry_id='test'))
-        self.assertEqual(len(entities),22)
-        self.assertEqual(len({entity._attr_unique_id for entity in entities}),22)
+        self.assertEqual(len(entities),23)
+        self.assertEqual(len({entity._attr_unique_id for entity in entities}),23)
         status=next(entity for entity in entities if entity.key=='house_fit_status')
         self.assertEqual(status.native_value,'waiting')
         self.assertFalse(hasattr(status,'_attr_suggested_display_precision'))
@@ -107,6 +108,17 @@ class HouseUITests(unittest.TestCase):
         stamp=next(entity for entity in entities if entity.key=='house_last_attempt')
         self.assertEqual(stamp.native_value,datetime.fromtimestamp(1700000000,UTC))
         self.assertFalse(hasattr(stamp,'_attr_state_class'))
+
+    def test_internal_gain_entity_and_confidence_interval_use_watts(self):
+        manager=SimpleNamespace(data=lambda:{'house_internal_gain':500},parameter_source='learned_fit',
+            own_heat_source=False,calibrated_floor=None,settings=self.defaults,last_accepted=None,
+            engine=SimpleNamespace(timestamp=None),active_intervals={'internal_gain':{'lower_95':.3,'upper_95':.7}})
+        entity=sensor.HouseSensor(SimpleNamespace(house=manager),SimpleNamespace(entry_id='test'),
+                                  'house_internal_gain','House internal heat gain','W')
+        self.assertEqual(entity.native_value,500)
+        self.assertEqual(entity._attr_device_class,'power')
+        self.assertEqual(entity.extra_state_attributes['approximate_95_percent_interval'],
+                         {'lower_95':300,'upper_95':700,'unit':'W'})
 
 
 if __name__=='__main__':unittest.main()

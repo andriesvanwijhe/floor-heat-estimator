@@ -25,7 +25,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def configured_parameters(settings):
-    return HouseParameters(**{key.removeprefix("house_"): settings[key] for key in HOUSE_KEYS})
+    values = {key.removeprefix("house_"): settings[key] for key in HOUSE_KEYS}
+    values["internal_gain"] /= 1000  # options/entities use W; physical model uses kW
+    return HouseParameters(**values)
 
 
 def valid_parameters(values):
@@ -35,6 +37,7 @@ def valid_parameters(values):
         p = HouseParameters(**values)
         return (.02 <= p.ci <= 1000 and .02 <= p.ce <= 1000 and .01 <= p.rie <= 100
                 and .01 <= p.rea <= 100 and .001 <= p.solar_area <= 500
+                and 0 <= p.internal_gain <= 5
                 and .0001 <= p.sigma_i <= .5 and .0001 <= p.sigma_e <= .5 and .01 <= p.sigma_y <= .5)
     except (TypeError, ValueError):
         return False
@@ -129,6 +132,7 @@ class HouseManager:
         p = self.engine.parameters
         data = {"house_fit_status": self.status, "house_ci": p.ci, "house_ce": p.ce,
                 "house_rie": p.rie, "house_rea": p.rea, "house_solar_area": p.solar_area,
+                "house_internal_gain": 1000*p.internal_gain,
                 "house_hie": 1000/p.rie, "house_hea": 1000/p.rea,
                 "house_heat_loss_coefficient": 1000/(p.rie+p.rea),
                 "house_last_attempt": self.last_attempt, "house_last_accepted": self.last_accepted,
@@ -170,9 +174,11 @@ class HouseManager:
                     self.engine = HouseEstimator(HouseParameters(**self.active_parameters))
                     if isinstance(saved.get("active_intervals"), dict):
                         self.active_intervals = {key: interval for key, interval in saved["active_intervals"].items()
-                            if key in ("ci", "ce", "rie", "rea", "solar_area") and isinstance(interval, dict)
+                            if key in ("ci", "ce", "rie", "rea", "solar_area", "internal_gain") and isinstance(interval, dict)
                             and all(isinstance(interval.get(k), (int, float)) and math.isfinite(interval[k])
-                                    and interval[k] > 0 for k in ("lower_95", "upper_95"))}
+                                    and (interval[k] >= 0 if key == "internal_gain" else interval[k] > 0)
+                                    for k in ("lower_95", "upper_95"))
+                            and interval["lower_95"] <= interval["upper_95"]}
         state = await self.state_store.async_load()
         if (isinstance(state, dict) and state.get("signature") == self.signature
                 and state.get("parameters") == self.engine.parameters.to_dict()

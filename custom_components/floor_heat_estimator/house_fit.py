@@ -13,9 +13,11 @@ if __package__:
 else:
     from house_model import HouseParameters, advance, correct, initial_state, predict_covariance, transition
 
-PARAMETERS = ("ci", "ce", "rie", "rea", "solar_area", "sigma_i", "sigma_e", "sigma_y")
+PARAMETERS = ("ci", "ce", "rie", "rea", "solar_area", "internal_gain", "sigma_i", "sigma_e", "sigma_y")
 BOUNDS = ((.02, 1000), (.02, 1000), (.01, 100), (.01, 100), (.001, 500),
-          (.0001, .5), (.0001, .5), (.01, .5))
+          (0, 5), (.0001, .5), (.0001, .5), (.01, .5))
+PHYSICAL_COUNT = 6
+GAIN_INDEX = PARAMETERS.index("internal_gain")
 
 
 class FitDeadline(Exception):
@@ -23,7 +25,40 @@ class FitDeadline(Exception):
 
 
 def unpack(log_values):
-    return HouseParameters(**dict(zip(PARAMETERS, map(math.exp, log_values))))
+    # The constant internal gain is linear in kW, so zero is a valid fitted
+    # result. Strictly positive capacities, resistances and noise use logs.
+    return HouseParameters(**{key: float(value) if i == GAIN_INDEX else math.exp(value)
+                              for i, (key, value) in enumerate(zip(PARAMETERS, log_values))})
+
+
+def pack(parameters):
+    return [getattr(parameters, key) if i == GAIN_INDEX else math.log(getattr(parameters, key))
+            for i, key in enumerate(PARAMETERS)]
+
+
+def observed_information(objective, values, h=.002):
+    """Numerical curvature, using one-sided gain differences at zero."""
+    import numpy as np
+    values = np.asarray(values, dtype=float)
+    size = len(values)
+    hessian = np.zeros((size, size))
+    centre = objective(values)
+    eye = np.eye(size)*h
+    for i in range(size):
+        if i == GAIN_INDEX and values[i] < h:
+            hessian[i, i] = (objective(values+2*eye[i])-2*objective(values+eye[i])+centre)/(h*h)
+        else:
+            hessian[i, i] = (objective(values+eye[i])-2*centre+objective(values-eye[i]))/(h*h)
+        for j in range(i):
+            if GAIN_INDEX in (i, j) and values[GAIN_INDEX] < h:
+                other = j if i == GAIN_INDEX else i
+                value = (objective(values+eye[GAIN_INDEX]+eye[other])-objective(values+eye[GAIN_INDEX]-eye[other])
+                         -objective(values+eye[other])+objective(values-eye[other]))/(2*h*h)
+            else:
+                value = (objective(values+eye[i]+eye[j])-objective(values+eye[i]-eye[j])
+                         -objective(values-eye[i]+eye[j])+objective(values-eye[i]-eye[j]))/(4*h*h)
+            hessian[i, j] = hessian[j, i] = value
+    return hessian
 
 
 def filter_points(points, parameters, check=lambda: None, retain=False):
@@ -112,7 +147,9 @@ def fit_house(request):
     points = request["points"]
     report = {"status": "insufficient_data", "accepted": False,
               "parameters": {}, "point_count": len(points),
-              "model": "Bacher-Madsen-2011-Figure-1",
+              "model": "Bacher-Madsen-2011-Figure-1+constant-internal-gain",
+              "parameter_units": {"ci": "kWh/K", "ce": "kWh/K", "rie": "K/kW", "rea": "K/kW",
+                                  "solar_area": "m²", "internal_gain": "kW"},
               "input_provenance": request.get("input_provenance", "unknown")}
     measured = [row for row in points if row[1] is not None]
     report["observation_count"] = len(measured)
@@ -143,9 +180,9 @@ def fit_house(request):
         return report
 
     baseline = HouseParameters(**request["baseline"])
-    lower = np.log([bound[0] for bound in BOUNDS])
-    upper = np.log([bound[1] for bound in BOUNDS])
-    initial = np.clip(np.log([getattr(baseline, key) for key in PARAMETERS]), lower+.01, upper-.01)
+    lower = np.array([bound[0] if i == GAIN_INDEX else math.log(bound[0]) for i, bound in enumerate(BOUNDS)])
+    upper = np.array([bound[1] if i == GAIN_INDEX else math.log(bound[1]) for i, bound in enumerate(BOUNDS)])
+    initial = np.clip(pack(baseline), lower+.01, upper-.01)
 
     def objective(values):
         check()
@@ -155,19 +192,20 @@ def fit_house(request):
             return 1e30
 
     fits = []
-    offsets = ([0]*8, [-.5, .5, -.5, .4, .3, 0, 0, 0], [.5, -.3, .4, -.4, -.3, 0, 0, 0])
+    offsets = ([0]*len(PARAMETERS), [-.5, .5, -.5, .4, .3, .2, 0, 0, 0],
+               [.5, -.3, .4, -.4, -.3, -.2, 0, 0, 0])
     for offset in offsets[:request.get("starts", 3)]:
         start = np.clip(initial+offset, lower+.01, upper-.01)
         # First identify physical dynamics with fixed small noise scales.
         # Free process noise from the first iteration can absorb a poor initial
         # RC model and trap optimisation at an unphysical, high-noise optimum.
         def physical_objective(values):
-            return objective(np.concatenate((values, start[5:])))
-        warm = minimize(physical_objective, start[:5], method="L-BFGS-B",
-                        bounds=list(zip(lower[:5], upper[:5])),
+            return objective(np.concatenate((values, start[PHYSICAL_COUNT:])))
+        warm = minimize(physical_objective, start[:PHYSICAL_COUNT], method="L-BFGS-B",
+                        bounds=list(zip(lower[:PHYSICAL_COUNT], upper[:PHYSICAL_COUNT])),
                         options={"maxiter": request.get("max_iterations", 160), "ftol": 1e-9, "maxls": 30})
         if np.isfinite(warm.fun):
-            start[:5] = warm.x
+            start[:PHYSICAL_COUNT] = warm.x
         result = minimize(objective, start, method="L-BFGS-B", bounds=list(zip(lower, upper)),
                           options={"maxiter": request.get("max_iterations", 160), "ftol": 1e-9, "maxls": 30})
         if np.isfinite(result.fun) and result.fun < 1e29:
@@ -181,20 +219,12 @@ def fit_house(request):
                   optimizer_message=str(best.message), negative_log_likelihood=float(best.fun),
                   candidate_parameters=candidate.to_dict())
 
-    # Observed-information Hessian in log coordinates, including nuisance noise
+    # Observed-information Hessian in optimizer coordinates, including nuisance noise
     # parameters. Marginalize noise with a Schur complement before evaluating
     # physical identifiability. Never report L-BFGS's approximate inverse as CI.
-    h = .002
-    hessian = np.zeros((8, 8))
-    centre = objective(best.x)
-    eye = np.eye(8)*h
-    for i in range(8):
-        hessian[i, i] = (objective(best.x+eye[i])-2*centre+objective(best.x-eye[i]))/(h*h)
-        for j in range(i):
-            value = (objective(best.x+eye[i]+eye[j])-objective(best.x+eye[i]-eye[j])
-                     -objective(best.x-eye[i]+eye[j])+objective(best.x-eye[i]-eye[j]))/(4*h*h)
-            hessian[i, j] = hessian[j, i] = value
-    physical = hessian[:5, :5]-hessian[:5, 5:]@np.linalg.pinv(hessian[5:, 5:])@hessian[5:, :5]
+    hessian = observed_information(objective, best.x)
+    n = PHYSICAL_COUNT
+    physical = hessian[:n, :n]-hessian[:n, n:]@np.linalg.pinv(hessian[n:, n:])@hessian[n:, :n]
     physical = (physical+physical.T)/2
     eigenvalues = np.linalg.eigvalsh(physical)
     identified = bool(eigenvalues[0] > 1e-6 and eigenvalues[-1]/eigenvalues[0] < 1e7)
@@ -203,16 +233,23 @@ def fit_house(request):
     if identified:
         covariance = np.linalg.inv(physical)
         deviations = np.sqrt(np.maximum(np.diag(covariance), 0))
-        identified = bool(np.max(deviations) < 1.1)
-        for i, key in enumerate(PARAMETERS[:5]):
+        identified = bool(np.max(deviations[:GAIN_INDEX]) < 1.1
+                          and deviations[GAIN_INDEX] <= max(.1, 2*candidate.internal_gain))
+        for i, key in enumerate(PARAMETERS[:PHYSICAL_COUNT]):
             uncertainty = min(float(deviations[i])*1.96, 30)
             value = getattr(candidate, key)
-            intervals[key] = {"lower_95": value*math.exp(-uncertainty), "upper_95": value*math.exp(uncertainty),
-                              "log_standard_error": float(deviations[i])}
+            if key == "internal_gain":
+                intervals[key] = {"lower_95": max(0, value-uncertainty), "upper_95": value+uncertainty,
+                                  "standard_error_kW": float(deviations[i]), "lower_bound": 0}
+            else:
+                intervals[key] = {"lower_95": value*math.exp(-uncertainty), "upper_95": value*math.exp(uncertainty),
+                                  "log_standard_error": float(deviations[i])}
     report.update(identifiable=identified, information_condition=condition,
                   approximate_confidence_intervals=intervals)
-    at_bound = bool(np.any((best.x[:5]-lower[:5])/(upper[:5]-lower[:5]) < .01)
-                    or np.any((upper[:5]-best.x[:5])/(upper[:5]-lower[:5]) < .01))
+    # Zero internal gains are physically admissible; only its upper bound is
+    # screened. The other physical coefficients remain strictly interior.
+    at_bound = bool(np.any((best.x[:GAIN_INDEX]-lower[:GAIN_INDEX])/(upper[:GAIN_INDEX]-lower[:GAIN_INDEX]) < .01)
+                    or np.any((upper[:n]-best.x[:n])/(upper[:n]-lower[:n]) < .01))
     validation_metrics, persistence = forecast_errors(points, candidate, split, check)
     baseline_metrics, _ = forecast_errors(points, baseline, split, check)
     report.update(validation=validation_metrics, baseline_validation=baseline_metrics,

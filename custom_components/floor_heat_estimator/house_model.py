@@ -16,13 +16,16 @@ class HouseParameters:
     rie: float = 1.0
     rea: float = 4.0
     solar_area: float = 10.0
+    internal_gain: float = 0.5
     sigma_i: float = 0.02
     sigma_e: float = 0.01
     sigma_y: float = 0.1
 
     def __post_init__(self):
-        if not all(not isinstance(v, bool) and math.isfinite(v) and v > 0 for v in asdict(self).values()):
-            raise ValueError("House coefficients and noise scales must be positive and finite")
+        if not all(not isinstance(v, bool) and math.isfinite(v)
+                   and (v >= 0 if key == "internal_gain" else v > 0)
+                   for key, v in asdict(self).items()):
+            raise ValueError("House coefficients/noise must be positive and finite; internal gain may be zero")
 
     def to_dict(self):
         return asdict(self)
@@ -53,7 +56,7 @@ def transition(parameters, hours):
             for i in range(4):
                 q[i] += scale*term[i]
     x, y, z, w = phi
-    # x_next = Phi*x + outdoor_gain*Ta + heating_gain*(Qh+Aw*G).
+    # x_next = Phi*x + outdoor_gain*Ta + heating_gain*(Qh+Aw*G+Qinternal).
     gains = (1-x-y, 1-z-w, (1-x)*(p.rie+p.rea)-y*p.rea,
              -z*(p.rie+p.rea)+(1-w)*p.rea)
     return phi, (max(q[0], 0), (q[1]+q[2])/2, max(q[3], 0)), gains
@@ -61,7 +64,7 @@ def transition(parameters, hours):
 
 def advance(state, outdoor, heat, solar, parameters, coefficients):
     phi, _, gains = coefficients
-    power = heat+parameters.solar_area*solar
+    power = heat+parameters.solar_area*solar+parameters.internal_gain
     return (phi[0]*state[0]+phi[1]*state[1]+gains[0]*outdoor+gains[2]*power,
             phi[2]*state[0]+phi[3]*state[1]+gains[1]*outdoor+gains[3]*power)
 

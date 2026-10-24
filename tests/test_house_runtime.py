@@ -4,6 +4,8 @@ import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime
 import importlib
+import hashlib
+import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -75,6 +77,30 @@ class HouseRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.store.saved['active_parameters']['ci'],2)
         self.assertEqual(self.manager.active_intervals['ci']['lower_95'],1.5)
         self.assertEqual(self.manager.data()['house_heat_loss_coefficient'],1000/3.5)
+        self.assertEqual(self.manager.data()['house_internal_gain'],500)
+
+    async def test_manual_internal_gain_units_and_zero_validation(self):
+        self.assertEqual(runtime.configured_parameters(self.coordinator.settings).internal_gain,.5)
+        self.coordinator.settings['house_internal_gain']=800
+        self.assertEqual(runtime.configured_parameters(self.coordinator.settings).internal_gain,.8)
+        values=self.accepted['parameters'].copy()
+        values['internal_gain']=0
+        self.assertTrue(runtime.valid_parameters(values))
+        values['internal_gain']=-.1
+        self.assertFalse(runtime.valid_parameters(values))
+
+    async def test_old_zero_gain_calibration_is_invalidated_but_history_marker_survives(self):
+        from_values={key:self.coordinator.settings[key] for key in runtime.HOUSE_KEYS if key!='house_internal_gain'}
+        old_signature=runtime.house_signature(self.coordinator.settings)+hashlib.sha256(
+            json.dumps(from_values,sort_keys=True).encode()).hexdigest()[:20]
+        old_parameters=self.accepted['parameters'].copy()
+        old_parameters.pop('internal_gain')
+        self.manager.store.saved={'signature':old_signature,'active_parameters':old_parameters,
+            'history_import':{'status':'completed','source_signature':runtime.house_signature(self.coordinator.settings)}}
+        with patch.dict(sys.modules,modules):await self.manager.async_load()
+        self.assertIsNone(self.manager.active_parameters)
+        self.assertEqual(self.manager.data()['house_internal_gain'],500)
+        self.assertEqual(self.manager.history_import['status'],'completed')
 
     async def test_preview_and_rejection_preserve_active_coefficients(self):
         await self.fit()
