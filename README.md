@@ -269,11 +269,11 @@ House minute CSVs live in `/config/floor_heat_estimator/<entry-id>/house/<source
 
 ### Fitting and validation
 
-Maximum likelihood is calculated from Kalman innovations. Strictly positive parameters are optimized in log coordinates with multiple starts. The internal heat gain is optimized linearly in kW with bounds 0–5 kW, allowing a genuine zero-gain fit. Physical dynamics are initialized with fixed noise scales before optimizing the physical and noise parameters together; this reduces convergence to a poor RC model masked by high process noise. Each segment starts with a diffuse envelope-state covariance, and its first six hours are filtered but excluded from the fitting likelihood.
+House fitting first estimates a low-frequency energy signature, then minimizes a combination of Kalman-innovations negative log likelihood and daily energy-balance error. The dynamic optimizer uses log overall heat loss and log resistance ratio, preserving the signature support without clipping flat regions. Strictly positive parameters are optimized in log coordinates with multiple starts. The internal heat gain is optimized linearly in kW with bounds 0–5 kW, allowing a genuine zero-gain fit. Physical dynamics are initialized with fixed noise scales before optimizing the physical and noise parameters together; this reduces convergence to a poor RC model masked by high process noise. Each segment starts with a diffuse envelope-state covariance, and its first six hours are filtered but excluded from the fitting likelihood.
 
 Initial eligibility requires at least 6.9 days of span and 80% of seven days' measured five-minute observations. The latest 25% of the window, or at least two days, is withheld. There must be at least three training days and two validation days at 80% coverage. Training must include at least 0.5 K room variation, 3 K outdoor variation, 0.5 kW heat-input variation, 50 W/m² solar variation, and at least two hours each of sunny and dark bins. These are screening rules, not evidence of unique physical parameters by themselves.
 
-Acceptance requires convergence, physical parameters away from bounds (except an admissible zero internal gain), adequate observed-information identifiability, and passing later-day forecast checks. Parameter covariance is approximated from the numerical likelihood Hessian in optimizer coordinates, marginalizing the nuisance noise scales. Internal-gain curvature uses one-sided differences at its zero bound; other physical parameters use log coordinates. Ill-conditioned/non-positive information or log standard errors above 1.1 reject a fit rather than publish precise-looking learned values. The internal-gain standard error must be no more than the larger of 100 W and twice its fitted value. Internal-gain intervals are approximate Wald intervals clipped at zero; they are not profile-likelihood intervals at the boundary.
+Acceptance requires convergence, physical parameters away from bounds (except an admissible zero internal gain), adequate observed-information identifiability, and passing later-day forecast checks. Parameter covariance is approximated from the combined objective curvature in optimizer coordinates, marginalizing nuisance noise and transforming heat-loss/ratio coordinates back into physical resistance coordinates. These intervals are conditional on the energy support and exclude its uncertainty. Internal-gain curvature uses one-sided differences at its zero bound; other physical parameters use log coordinates. Ill-conditioned/non-positive information or log standard errors above 1.1 reject a fit rather than publish precise-looking learned values. The internal-gain standard error must be no more than the larger of 100 W and twice its fitted value. Internal-gain intervals are approximate Wald intervals clipped at zero; they are not profile-likelihood intervals at the boundary.
 
 Forecasts are launched hourly from filter states using only room observations available at each origin. They then run **without future room-temperature corrections** over 1, 6 and 24 hours. Historical future heat/outdoor/solar inputs are used: these are conditional retrospective validation errors, not the error expected with uncertain future weather/heating forecasts. Each horizon needs at least four valid forecasts. Both 6-hour and 24-hour RMSE must pass the ceiling, not exceed the active-model RMSE by more than 5% (with a 0.1 K floor), and beat or match a persistence baseline (also with a 0.1 K floor). Signed bias and standardized innovation lag-one correlation are reported too.
 
@@ -281,7 +281,7 @@ Rejected, insufficient, timed-out and failed fits preserve the active coefficien
 
 ### House entities
 
-Enabling adds 23 diagnostic sensors, three tomorrow-demand sensors and three buttons on the existing device. Existing floor entity unique IDs are unchanged.
+Enabling adds 23 diagnostic sensors, three tomorrow-demand sensors and four buttons on the existing device. Existing floor entity unique IDs are unchanged.
 
 | Entity name | Unit / interpretation |
 |---|---|
@@ -306,7 +306,7 @@ Each physical-parameter entity has `parameter_source` and last-applied-fit attri
 
 ### House actions
 
-The device buttons are **Fit house now**, **Import house history and fit**, and **Restore manual house parameters**. Corresponding actions work in Developer tools and automations:
+The device buttons are **Fit house now**, **Import house history and fit**, **Import and apply provisional house fit**, and **Restore manual house parameters**. Corresponding actions work in Developer tools and automations:
 
 ```yaml
 action: floor_heat_estimator.import_house_history_and_fit
@@ -352,7 +352,7 @@ The live house model still integrates measured heat, outdoor temperature and sol
 
 Fitting still uses five-minute observations for maximum-likelihood identification. Retrospective forecast validation starts from a twin replayed with midnight-only corrections, matching live operation. Future room readings never correct an individual forecast trajectory.
 
-Both house fit actions accept `force: true`. Normal eligibility and quality gates are then bypassed and explicitly listed in `bypassed_checks`; parameters are **provisional**, not validated. The irreducible minimum is twelve hours of usable inputs, 96 measured five-minute points, and 24 measured training observations after a continuous six-hour warm-up. Optimization must converge to a finite solution within physical bounds and the configured time limit. A forced fit defaults to preview even if automatic application is enabled. To activate it explicitly:
+Both house fit actions accept `force: true`. Normal eligibility and quality gates are then bypassed and explicitly listed in `bypassed_checks`; parameters are **provisional**, not validated. The irreducible minimum now includes a complete measured 24-hour training window, 96 measured five-minute points, and 24 measured training observations after a continuous six-hour warm-up. Since the latest quarter is withheld in forced fits, this normally requires at least 32 total hours of usable data. Optimization must converge to a finite solution within physical bounds and the configured time limit. A forced fit defaults to preview even if automatic application is enabled. To activate it explicitly:
 
 ```yaml
 action: floor_heat_estimator.import_house_history_and_fit
@@ -376,3 +376,26 @@ New sensors: **House tomorrow average heat load** (kW), **House tomorrow peak he
 This steady-state calculation ignores the current interior/envelope state and heat capacities. It estimates the heating needed to hold the setpoint without stored-heat effects or a warm-up allowance; it does not guarantee the actual room remains at that temperature. Gains exceeding losses yield zero heating rather than negative demand. This is a forecast only and does not control the heat pump.
 
 Forecast variable conventions: [Open-Meteo documentation](https://open-meteo.com/en/docs).
+
+
+### Energy-anchored house fitting (v0.3.3)
+
+This release changes house fitting, not floor calibration or the steady-state forecast method. Updating does not overwrite active coefficients; run a new fit after updating.
+
+Stage 1 uses matched complete 24-hour windows starting every six hours and 72-hour windows starting every day, entirely within the training segment. Missing observations or input gaps invalidate a window; windows never cross the validation boundary. The regression is:
+
+`mean(Qfloor) = H * mean(Troom - Toutdoor) - A * mean(GHI) - Qinternal + Cproxy * delta(Troom)/hours`
+
+`H` is kW/K, power is kW, GHI is kW/m² and `Cproxy` is kWh/K. The last term allows observed room warming/cooling to affect the signature. This **storage proxy is an approximation**, not a separately identified envelope temperature or published heat capacity. A 72-hour window is not assumed perfectly steady.
+
+Joint gain estimation requires at least five training days, twelve aggregate windows and normalized design-matrix condition below 100. If that evidence is absent, a normal fit stops with `poor_energy_identification`; a forced provisional fit instead fixes solar area and internal gain to the **configured manual values**, not the previous possibly unstable fit. It then estimates conditional heat loss and a storage proxy. This assumption is explicitly reported. More data cannot separate perfectly collinear weather and gains.
+
+The heat-loss support half-width is the larger of 25% of estimated H and twice the aggregate residual/model-error floor divided by RMS indoor/outdoor temperature difference (minimum residual floor 0.1 kW). Overlapping windows are downweighted according to record duration. The band is an **engineering support band**, not a statistical confidence interval or proof of physical identification; room-only storage can miss slow envelope drift. Solar support is 50–150% of the signature estimate and internal-gain support is ±500 W, within physical limits, when gains are jointly estimated. Conditional fits keep those gains fixed.
+
+Stage 2 optimizes heat capacities, resistance ratio, heat loss within that support, gains within their support and noise scales. It includes an independent energy residual obtained by driving the envelope equation with the measured room and outdoor temperature trajectory, without Kalman corrections. The integrated interior balance infers required heat from `Ci*delta(Troom) + integral((Troom-Te)/Rie) - integral(solar+internal gains)`. Envelope storage is therefore modeled explicitly at this stage. Envelope initialization assumes the steady temperature division at each segment start; very short records remain sensitive to this assumption. Signed required energy is retained rather than clipped to zero.
+
+Normal acceptance also requires at least one complete withheld 24-hour energy window. Its RMS error in average thermal load must be no more than the larger of 0.15 kW and 25% of average measured heating load, and must not worsen the active model by more than 5% (0.15 kW floor). All previous temperature, physical and identifiability checks remain. Reaching the heat-loss support boundary prevents normal acceptance. Parameter intervals use local combined-objective curvature and remain conditional approximations.
+
+The full House fit status report contains `energy_signature`, `energy_training`, `energy_validation`, `baseline_energy_validation`, `energy_validated` and `energy_anchor_enforced`. Energy validation evaluates heat needed for the measured room trajectory; it is distinct from open-loop temperature-forecast validation. Active heat-loss/solar/internal-gain entities retain their applied signature attributes across previews and restarts.
+
+For a one-button override: **Settings → Devices & services → Floor Heat Estimator → device → Import and apply provisional house fit**. This imports available Recorder history, runs the forced fit and applies a converged candidate as provisional. It bypasses normal quality gates but **does not remove the energy-signature constraints or the need for a complete measured training day**. The existing manual house restore button remains available. Automatic fits do not force application.

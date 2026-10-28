@@ -99,6 +99,8 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
                 automatic_learning=manager.settings["house_learning_enabled"] and manager.settings["record_samples"])
         if self.key == "house_envelope_uncertainty":
             attributes["interpretation"] = "Conditional Kalman state standard deviation; excludes parameter and floor-input uncertainty"
+        if self.key in ("house_heat_loss_coefficient", "house_solar_area", "house_internal_gain"):
+            attributes["active_energy_signature"] = getattr(manager,"active_energy_anchor",None)
         if self.key == "house_interior_temperature":
             attributes.update(correction_policy="local_midnight", timezone=manager.timezone,
                               last_correction_utc=datetime.fromtimestamp(manager.engine.last_correction, UTC).isoformat()

@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]/'custom_components/floor_heat_estimator'
 package = ModuleType('_house_ui_tests')
@@ -26,7 +26,7 @@ class CoordinatorEntity:
 
 
 modules={name:ModuleType(name) for name in ('voluptuous','homeassistant','homeassistant.config_entries',
-    'homeassistant.core','homeassistant.helpers','homeassistant.helpers.selector','homeassistant.components',
+    'homeassistant.core','homeassistant.helpers','homeassistant.helpers.selector','homeassistant.components','homeassistant.components.button',
     'homeassistant.components.sensor','homeassistant.const','homeassistant.helpers.entity',
     'homeassistant.helpers.update_coordinator')}
 modules['voluptuous'].Schema=lambda value:value
@@ -40,20 +40,30 @@ for key in ('TextSelector','EntitySelector','EntitySelectorConfig','NumberSelect
 selector.NumberSelectorMode=SimpleNamespace(BOX='box')
 modules['homeassistant.helpers'].selector=selector
 modules['homeassistant.components.sensor'].SensorEntity=type('SensorEntity',(),{})
+modules['homeassistant.components.button'].ButtonEntity=type('ButtonEntity',(),{})
 modules['homeassistant.components.sensor'].SensorDeviceClass=SimpleNamespace(TIMESTAMP='timestamp',TEMPERATURE='temperature',POWER='power',ENERGY='energy')
 modules['homeassistant.components.sensor'].SensorStateClass=SimpleNamespace(MEASUREMENT='measurement')
-modules['homeassistant.const'].EntityCategory=SimpleNamespace(DIAGNOSTIC='diagnostic')
+modules['homeassistant.const'].EntityCategory=SimpleNamespace(DIAGNOSTIC='diagnostic',CONFIG='config')
 modules['homeassistant.helpers.entity'].DeviceInfo=lambda **kwargs:kwargs
 modules['homeassistant.helpers.update_coordinator'].CoordinatorEntity=CoordinatorEntity
 with patch.dict(sys.modules,modules):
     config=importlib.import_module('_house_ui_tests.config_flow')
     sensor=importlib.import_module('_house_ui_tests.house_sensor')
+    button=importlib.import_module('_house_ui_tests.button')
 const=importlib.import_module('_house_ui_tests.const')
 house_const=importlib.import_module('_house_ui_tests.house_const')
 model=importlib.import_module('_house_ui_tests.house_model')
 
 
 class HouseUITests(unittest.TestCase):
+    def test_provisional_button_imports_and_applies_without_yaml(self):
+        house=SimpleNamespace(start_fit=Mock())
+        entity=button.HouseButton(SimpleNamespace(house=house),SimpleNamespace(entry_id='test'),'force')
+        asyncio.run(entity.async_press())
+        house.start_fit.assert_called_once_with(import_history=True,force=True,apply=True)
+        self.assertEqual(entity._attr_name,'Import and apply provisional house fit')
+        self.assertEqual(entity._attr_unique_id,'test_house_force')
+
     def setUp(self):
         self.defaults={**const.DEFAULTS,**{key:'sensor.'+key for key in const.SOURCE_KEYS}}
         def state(entity):

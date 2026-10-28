@@ -86,6 +86,7 @@ class HouseManager:
         self.engine = HouseEstimator(configured_parameters(coordinator.settings), self.timezone)
         self.active_parameters = None
         self.active_provisional = False
+        self.active_energy_anchor = None
         self.forecast = {"status": "waiting"}
         self.active_intervals = {}
         self.calibrated_floor = None
@@ -179,6 +180,8 @@ class HouseManager:
                 if valid_parameters(saved.get("active_parameters")):
                     self.active_parameters = saved["active_parameters"]
                     self.active_provisional = saved.get("active_provisional", False) is True
+                    anchor = saved.get("active_energy_anchor")
+                    self.active_energy_anchor = anchor if isinstance(anchor,dict) else None
                     self.calibrated_floor = saved.get("calibrated_floor")
                     self.engine = HouseEstimator(HouseParameters(**self.active_parameters), self.timezone)
                     if isinstance(saved.get("active_intervals"), dict):
@@ -198,12 +201,13 @@ class HouseManager:
                 if 0 <= self.started-snapshot["timestamp"] <= 600:
                     self.engine.restore(snapshot)
 
-    async def _save(self, active, calibrated_floor, intervals=None, provisional=None):
+    async def _save(self, active, calibrated_floor, intervals=None, provisional=None, energy_anchor=None):
         data = {"signature": self.signature, "active_parameters": active,
                 "calibrated_floor": calibrated_floor, "last_attempt_floor": self.last_attempt_floor,
                 "last_attempt": self.last_attempt, "last_accepted": self.last_accepted,
                 "history_import": self.history_import, "report": self.report}
         data["active_provisional"] = (self.active_provisional if provisional is None else provisional) if active is not None else False
+        data["active_energy_anchor"] = (self.active_energy_anchor if energy_anchor is None else energy_anchor) if active is not None else None
         data["active_intervals"] = (self.active_intervals if intervals is None else intervals) if active is not None else {}
         await self.store.async_save(data)
         if await self.store.async_load() != data:
@@ -310,6 +314,7 @@ class HouseManager:
                 request = await self.hass.async_add_executor_job(
                     prepare_fit_request, self.folder, floor_folder, settings, began, self.own_heat_source)
                 request.update(baseline=self.engine.parameters.to_dict(),
+                    energy_prior=configured_parameters(settings).to_dict(),
                     force=force, correction_timezone=self.timezone,
                     maximum_rmse=settings["house_max_fit_rmse"], max_seconds=settings["house_max_fit_minutes"]*60)
                 self.report = await run_worker(request, settings["house_max_fit_minutes"]*60+5)
@@ -334,14 +339,16 @@ class HouseManager:
                     previous_accepted = self.last_accepted
                     self.last_accepted = datetime.now(UTC).timestamp()
                     provisional = self.report.get("provisional", False) is True
+                    anchor = {k:v for k,v in self.report.get("energy_signature",{}).items() if k!='windows'}
                     self.report.update(status="applied_provisional" if provisional else "applied", applied=True)
                     try:
-                        await self._save(values, snapshot_floor, self.report.get("approximate_confidence_intervals", {}), provisional)
+                        await self._save(values, snapshot_floor, self.report.get("approximate_confidence_intervals", {}), provisional, anchor)
                     except Exception:
                         self.last_accepted = previous_accepted
                         raise
                     self.active_parameters, self.calibrated_floor, self.engine = values, snapshot_floor, engine
                     self.active_provisional = provisional
+                    self.active_energy_anchor = anchor
                     self.active_intervals = self.report.get("approximate_confidence_intervals", {})
                     await self.save_state()
                     self.update_forecast(datetime.now(UTC))
@@ -377,6 +384,7 @@ class HouseManager:
             raise
         self.active_parameters = self.calibrated_floor = None
         self.active_provisional = False
+        self.active_energy_anchor = None
         self.active_intervals = {}
         self.engine = HouseEstimator(configured_parameters(self.settings), self.timezone)
         self.update_forecast(datetime.now(UTC))

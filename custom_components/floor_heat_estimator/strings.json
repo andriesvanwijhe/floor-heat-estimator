@@ -205,7 +205,7 @@
         },
         "force": {
           "name": "Force provisional fit",
-          "description": "Bypass normal data coverage, excitation, identifiability and validation gates. Requires twelve hours, 96 measured points, 24 training observations after warm-up, and a converged finite fit. Defaults to preview; set apply true explicitly to activate."
+          "description": "Bypass normal evidence and validation gates while retaining energy-signature constraints. Requires a continuous measured 24-hour training window (normally 32 total hours with holdout) and a converged finite fit. Preview by default; set apply true to activate provisional parameters."
         }
       }
     },
@@ -223,7 +223,7 @@
         },
         "force": {
           "name": "Force provisional fit",
-          "description": "Bypass normal data coverage, excitation, identifiability and validation gates. Requires twelve hours, 96 measured points, 24 training observations after warm-up, and a converged finite fit. Defaults to preview; set apply true explicitly to activate."
+          "description": "Bypass normal evidence and validation gates while retaining energy-signature constraints. Requires a continuous measured 24-hour training window (normally 32 total hours with holdout) and a converged finite fit. Preview by default; set apply true to activate provisional parameters."
         }
       }
     },

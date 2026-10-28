@@ -60,7 +60,7 @@ fit_house_now:
         boolean:
     force:
       name: Force provisional fit
-      description: Bypass normal data and quality gates. Requires twelve hours, 96 measured points and a converged finite fit. A forced fit previews by default; explicitly set apply true to activate provisional parameters.
+      description: Bypass normal data and quality gates. Requires a continuous measured 24-hour training window (normally 32 hours total with holdout), 96 measured points and a converged finite fit. Energy-signature constraints remain enforced. A forced fit previews by default; explicitly set apply true to activate provisional parameters.
       default: false
       selector:
         boolean:
@@ -82,7 +82,7 @@ import_house_history_and_fit:
         boolean:
     force:
       name: Force provisional fit
-      description: Bypass normal data and quality gates. Requires twelve hours, 96 measured points and a converged finite fit. A forced fit previews by default; explicitly set apply true to activate provisional parameters.
+      description: Bypass normal data and quality gates. Requires a continuous measured 24-hour training window (normally 32 hours total with holdout), 96 measured points and a converged finite fit. Energy-signature constraints remain enforced. A forced fit previews by default; explicitly set apply true to activate provisional parameters.
       default: false
       selector:
         boolean:

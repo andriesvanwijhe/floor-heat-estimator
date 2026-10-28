@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3
+
+- Anchor house heat loss to a matched 24/72-hour energy signature before fitting dynamics, including a room-storage nuisance term. Fit solar/internal gains only when the signature has sufficient duration and independent variation; otherwise provisional fits retain configured gains.
+- Optimize overall heat loss and the resistance ratio directly within the energy support band. Add integrated physical energy-balance residuals to the dynamics objective so fitted process noise cannot conceal daily heat errors.
+- Require withheld heating-energy accuracy as well as temperature validation for normal acceptance. Report the energy support assumptions, signed daily energy errors and conditional parameter uncertainty explicitly. Engineering support bands are not confidence intervals.
+- Add an **Import and apply provisional house fit** device button. It imports history, forces fitting and applies a converged provisional result while preserving the energy anchor. No YAML is required.
+- Keep old coefficients until a replacement is explicitly applied; retain history and existing entity IDs. The forecast remains steady-state in this release; hourly coupled heat-pump/floor scheduling is a separate extension.
+
 ## 0.3.2
 
 - Add explicit forced house fitting with provisional diagnostics, relaxed data requirements and preview by default. Activation requires `force: true` and `apply: true`; scheduled fits retain normal checks.

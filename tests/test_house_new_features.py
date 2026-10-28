@@ -129,7 +129,8 @@ class ForcedFitTests(unittest.TestCase):
         parameters=model.HouseParameters()
         start=stamp('2026-10-26T00:00:00+00:00')
         points=[[start+n*300,20,5,2,0] for n in range(2*288+1)]
-        request={'points':points,'baseline':parameters.to_dict(),'starts':1,'max_seconds':30}
+        bad_prior=model.HouseParameters(ci=20,ce=539,rie=.106,rea=1.905,solar_area=39,internal_gain=0)
+        request={'points':points,'baseline':bad_prior.to_dict(),'energy_prior':parameters.to_dict(),'starts':1,'max_seconds':30}
         self.assertEqual(fitting.fit_house(request)['status'],'insufficient_data')
         def optimizer(fn, values, **kwargs):
             return SimpleNamespace(x=values,fun=fn(values),success=True,message='test converged')
@@ -142,6 +143,12 @@ class ForcedFitTests(unittest.TestCase):
         self.assertIn('input_excitation',result['bypassed_checks'])
         self.assertIn('held_out_validation',result['bypassed_checks'])
         self.assertIsNotNone(result['final_state'])
+        self.assertTrue(result['energy_anchor_enforced'])
+        self.assertEqual(result['parameters']['internal_gain'],parameters.internal_gain)
+        lo,hi=result['energy_signature']['heat_loss_support_kW_K']
+        h=1/(result['parameters']['rie']+result['parameters']['rea'])
+        self.assertTrue(lo-1e-12<=h<=hi+1e-12)
+        self.assertLess(h,1/(bad_prior.rie+bad_prior.rea)*.6)
 
 
 if __name__=='__main__':unittest.main()

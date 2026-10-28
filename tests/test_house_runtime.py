@@ -229,5 +229,21 @@ class HouseRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.forecast['status'],'stale_forecast')
         self.assertNotIn('house_tomorrow_heat_energy',self.manager.data())
 
+    async def test_applied_energy_anchor_survives_preview_and_restart(self):
+        first=deepcopy(self.accepted)
+        first['energy_signature']={'status':'joint_signature','heat_loss_kW_K':1/3.5,
+                                   'heat_loss_support_kW_K':[.25,.35],'windows':[{'private':'training'}]}
+        await self.fit(first)
+        anchor=deepcopy(self.manager.active_energy_anchor)
+        self.assertNotIn('windows',anchor)
+        preview=deepcopy(first)
+        preview['energy_signature']['heat_loss_kW_K']=.4
+        await self.fit(preview,apply=False)
+        self.assertEqual(self.manager.active_energy_anchor,anchor)
+        restored=runtime.HouseManager(self.coordinator)
+        restored.store.saved=self.manager.store.saved
+        with patch.dict(sys.modules,modules): await restored.async_load()
+        self.assertEqual(restored.active_energy_anchor,anchor)
+
 
 if __name__=='__main__':unittest.main()
