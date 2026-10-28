@@ -82,6 +82,8 @@ def validate_parameters(values):
 
 def house_schema(defaults):
     fields = {vol.Required("house_enabled", default=defaults["house_enabled"]): selector.BooleanSelector()}
+    fields[vol.Required("house_forecast_source", default=defaults["house_forecast_source"])] = selector.EntitySelector(
+        selector.EntitySelectorConfig(domain=["sensor"]))
     for key in HOUSE_SOURCES:
         fields[vol.Required(key, default=defaults[key])] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain=["sensor", "input_number"]))

@@ -19,6 +19,7 @@ from .house_const import HOUSE_KEYS
 from .house_data import (append_row, floor_signature, house_signature, make_bins,
                          prepare_fit_request, settings_signature, solar_state)
 from .house_model import HouseEstimator, HouseParameters
+from .house_forecast import tomorrow_demand
 from .source import numeric_state
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,10 +80,13 @@ class HouseManager:
         self.coordinator = coordinator
         self.hass, self.entry = coordinator.hass, coordinator.entry
         self.signature = settings_signature(coordinator.settings)
+        self.timezone = getattr(self.hass.config, "time_zone", "UTC")
         self.store = Store(self.hass, 1, f"{DOMAIN}.house.{self.entry.entry_id}", atomic_writes=True)
         self.state_store = Store(self.hass, 1, f"{DOMAIN}.house_state.{self.entry.entry_id}", atomic_writes=True)
-        self.engine = HouseEstimator(configured_parameters(coordinator.settings))
+        self.engine = HouseEstimator(configured_parameters(coordinator.settings), self.timezone)
         self.active_parameters = None
+        self.active_provisional = False
+        self.forecast = {"status": "waiting"}
         self.active_intervals = {}
         self.calibrated_floor = None
         self.last_attempt_floor = None
@@ -108,7 +112,7 @@ class HouseManager:
 
     @property
     def parameter_source(self):
-        return "learned_fit" if self.active_parameters is not None else "manual_configuration"
+        return "forced_provisional_fit" if self.active_provisional else "learned_fit" if self.active_parameters is not None else "manual_configuration"
 
     @property
     def status(self):
@@ -138,6 +142,10 @@ class HouseManager:
                 "house_last_attempt": self.last_attempt, "house_last_accepted": self.last_accepted,
                 "house_next_refit": self.next_refit,
                 "house_point_count": self.report.get("observation_count")}
+        if self.forecast.get("status") == "ready":
+            data.update(house_tomorrow_heat_load=self.forecast["average_load_kW"],
+                        house_tomorrow_heat_energy=self.forecast["energy_kWh"],
+                        house_tomorrow_peak_heat_load=self.forecast["peak_load_kW"])
         for horizon in (1, 6, 24):
             data[f"house_validation_{horizon}h"] = self.report.get("validation", {}).get(str(horizon), {}).get("rmse_K")
         state = self.engine.state
@@ -170,8 +178,9 @@ class HouseManager:
                 self.last_attempt_floor = saved.get("last_attempt_floor")
                 if valid_parameters(saved.get("active_parameters")):
                     self.active_parameters = saved["active_parameters"]
+                    self.active_provisional = saved.get("active_provisional", False) is True
                     self.calibrated_floor = saved.get("calibrated_floor")
-                    self.engine = HouseEstimator(HouseParameters(**self.active_parameters))
+                    self.engine = HouseEstimator(HouseParameters(**self.active_parameters), self.timezone)
                     if isinstance(saved.get("active_intervals"), dict):
                         self.active_intervals = {key: interval for key, interval in saved["active_intervals"].items()
                             if key in ("ci", "ce", "rie", "rea", "solar_area", "internal_gain") and isinstance(interval, dict)
@@ -180,7 +189,8 @@ class HouseManager:
                                     for k in ("lower_95", "upper_95"))
                             and interval["lower_95"] <= interval["upper_95"]}
         state = await self.state_store.async_load()
-        if (isinstance(state, dict) and state.get("signature") == self.signature
+        if (isinstance(state, dict) and state.get("correction_timezone") == self.timezone
+                and state.get("correction_policy") == "midnight" and state.get("signature") == self.signature
                 and state.get("parameters") == self.engine.parameters.to_dict()
                 and state.get("floor") == (floor_signature(self.settings) if self.own_heat_source else None)):
             snapshot = state.get("snapshot")
@@ -188,11 +198,12 @@ class HouseManager:
                 if 0 <= self.started-snapshot["timestamp"] <= 600:
                     self.engine.restore(snapshot)
 
-    async def _save(self, active, calibrated_floor, intervals=None):
+    async def _save(self, active, calibrated_floor, intervals=None, provisional=None):
         data = {"signature": self.signature, "active_parameters": active,
                 "calibrated_floor": calibrated_floor, "last_attempt_floor": self.last_attempt_floor,
                 "last_attempt": self.last_attempt, "last_accepted": self.last_accepted,
                 "history_import": self.history_import, "report": self.report}
+        data["active_provisional"] = (self.active_provisional if provisional is None else provisional) if active is not None else False
         data["active_intervals"] = (self.active_intervals if intervals is None else intervals) if active is not None else {}
         await self.store.async_save(data)
         if await self.store.async_load() != data:
@@ -201,6 +212,7 @@ class HouseManager:
     async def save_state(self):
         await self.state_store.async_save({"signature": self.signature,
             "parameters": self.engine.parameters.to_dict(), "snapshot": self.engine.snapshot(),
+            "correction_policy": "midnight", "correction_timezone": self.timezone,
             "floor": floor_signature(self.settings) if self.own_heat_source else None})
 
     async def async_update(self, now, floor_data=None):
@@ -208,6 +220,7 @@ class HouseManager:
         if minute == self.minute:
             return
         self.minute = minute
+        self.update_forecast(now)
         states = {name: self.hass.states.get(self.settings[key]) for name, key in (
             ("room", "room_temperature"), ("outdoor", "house_outdoor_temperature"),
             ("heat", "house_heat_input"), ("solar", "house_solar"))}
@@ -241,16 +254,28 @@ class HouseManager:
         if due is not None and now.timestamp() >= due and not self.busy:
             self.start_fit(import_history=self.needs_import)
 
-    def start_fit(self, import_history=False, apply=None):
+    def update_forecast(self, now):
+        source = self.hass.states.get(self.settings["house_forecast_source"])
+        if source is None or source.state in ("unknown", "unavailable"):
+            self.forecast = {"status": "forecast_source_unavailable"}
+            return
+        updated = getattr(source, "last_updated", None)
+        if updated is not None and now.timestamp()-updated.timestamp() > 12*3600:
+            self.forecast = {"status": "stale_forecast"}
+            return
+        self.forecast = tomorrow_demand(source.attributes, self.engine.parameters,
+            now, self.timezone, self.settings["house_forecast_target"])
+
+    def start_fit(self, import_history=False, apply=None, force=False):
         if self.busy:
             raise HomeAssistantError("A house fit is already queued or running")
         self.busy = True
         self.cancel.clear()
         self.task = self.entry.async_create_background_task(
-            self.hass, self._fit(import_history, apply), f"{DOMAIN} house fit {self.entry.entry_id}")
+            self.hass, self._fit(import_history, apply, force), f"{DOMAIN} house fit {self.entry.entry_id}")
         self.coordinator.async_update_listeners()
 
-    async def _fit(self, import_history, apply):
+    async def _fit(self, import_history, apply, force=False):
         began = datetime.now(UTC).timestamp()
         self.last_attempt = began
         try:
@@ -285,6 +310,7 @@ class HouseManager:
                 request = await self.hass.async_add_executor_job(
                     prepare_fit_request, self.folder, floor_folder, settings, began, self.own_heat_source)
                 request.update(baseline=self.engine.parameters.to_dict(),
+                    force=force, correction_timezone=self.timezone,
                     maximum_rmse=settings["house_max_fit_rmse"], max_seconds=settings["house_max_fit_minutes"]*60)
                 self.report = await run_worker(request, settings["house_max_fit_minutes"]*60+5)
                 self.report.update(input_provenance=request["input_provenance"],
@@ -293,29 +319,32 @@ class HouseManager:
                     first_usable_bin_utc=request.get("first_usable_bin_utc"),
                     last_usable_bin_utc=request.get("last_usable_bin_utc"),
                     elapsed_total_seconds=round(datetime.now(UTC).timestamp()-began, 3))
-                should_apply = settings["house_apply_fitted_parameters"] if apply is None else apply
+                should_apply = (False if force else settings["house_apply_fitted_parameters"]) if apply is None else apply
                 if self.own_heat_source and floor_signature(self.settings) != snapshot_floor:
                     self.report.update(status="superseded", accepted=False, reason="Floor calibration changed while fitting; retry with the current calibration")
                 if self.report.get("accepted") and should_apply:
                     values = self.report.get("parameters")
                     if not valid_parameters(values):
                         raise ValueError("Invalid fitted house parameters")
-                    engine = HouseEstimator(HouseParameters(**values))
+                    engine = HouseEstimator(HouseParameters(**values), self.timezone)
                     if not engine.restore(self.report.get("final_state")):
                         raise ValueError("Invalid fitted house state")
                     for point in make_bins(list(self.rows), settings["house_max_gap_minutes"]*60):
                         engine.step(point)
                     previous_accepted = self.last_accepted
                     self.last_accepted = datetime.now(UTC).timestamp()
-                    self.report.update(status="applied", applied=True)
+                    provisional = self.report.get("provisional", False) is True
+                    self.report.update(status="applied_provisional" if provisional else "applied", applied=True)
                     try:
-                        await self._save(values, snapshot_floor, self.report.get("approximate_confidence_intervals", {}))
+                        await self._save(values, snapshot_floor, self.report.get("approximate_confidence_intervals", {}), provisional)
                     except Exception:
                         self.last_accepted = previous_accepted
                         raise
                     self.active_parameters, self.calibrated_floor, self.engine = values, snapshot_floor, engine
+                    self.active_provisional = provisional
                     self.active_intervals = self.report.get("approximate_confidence_intervals", {})
                     await self.save_state()
+                    self.update_forecast(datetime.now(UTC))
                 else:
                     self.report["applied"] = False
                     await self._save(self.active_parameters, self.calibrated_floor)
@@ -347,8 +376,10 @@ class HouseManager:
             self.report = old_report
             raise
         self.active_parameters = self.calibrated_floor = None
+        self.active_provisional = False
         self.active_intervals = {}
-        self.engine = HouseEstimator(configured_parameters(self.settings))
+        self.engine = HouseEstimator(configured_parameters(self.settings), self.timezone)
+        self.update_forecast(datetime.now(UTC))
         self.coordinator.async_update_listeners()
 
     async def async_shutdown(self):

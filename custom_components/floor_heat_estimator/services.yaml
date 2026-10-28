@@ -58,6 +58,13 @@ fit_house_now:
       description: Override automatic application; false previews the candidate without changing active parameters.
       selector:
         boolean:
+    force:
+      name: Force provisional fit
+      description: Bypass normal data and quality gates. Requires twelve hours, 96 measured points and a converged finite fit. A forced fit previews by default; explicitly set apply true to activate provisional parameters.
+      default: false
+      selector:
+        boolean:
+
 import_house_history_and_fit:
   name: Import house history and fit
   description: Import detailed local history then fit the house model, replaying raw floor measurements with one frozen calibration when the selected heat source belongs to this entry.
@@ -73,6 +80,13 @@ import_house_history_and_fit:
       description: Override automatic application; false previews the candidate without changing active parameters.
       selector:
         boolean:
+    force:
+      name: Force provisional fit
+      description: Bypass normal data and quality gates. Requires twelve hours, 96 measured points and a converged finite fit. A forced fit previews by default; explicitly set apply true to activate provisional parameters.
+      default: false
+      selector:
+        boolean:
+
 reset_house_parameters:
   name: Restore manual house parameters
   description: Restore configured manual house coefficients. Training recordings remain available.

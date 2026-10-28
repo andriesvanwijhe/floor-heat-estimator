@@ -40,7 +40,7 @@ for key in ('TextSelector','EntitySelector','EntitySelectorConfig','NumberSelect
 selector.NumberSelectorMode=SimpleNamespace(BOX='box')
 modules['homeassistant.helpers'].selector=selector
 modules['homeassistant.components.sensor'].SensorEntity=type('SensorEntity',(),{})
-modules['homeassistant.components.sensor'].SensorDeviceClass=SimpleNamespace(TIMESTAMP='timestamp',TEMPERATURE='temperature',POWER='power')
+modules['homeassistant.components.sensor'].SensorDeviceClass=SimpleNamespace(TIMESTAMP='timestamp',TEMPERATURE='temperature',POWER='power',ENERGY='energy')
 modules['homeassistant.components.sensor'].SensorStateClass=SimpleNamespace(MEASUREMENT='measurement')
 modules['homeassistant.const'].EntityCategory=SimpleNamespace(DIAGNOSTIC='diagnostic')
 modules['homeassistant.helpers.entity'].DeviceInfo=lambda **kwargs:kwargs
@@ -99,8 +99,8 @@ class HouseUITests(unittest.TestCase):
             engine=SimpleNamespace(timestamp=None),active_intervals={})
         coordinator=SimpleNamespace(house=manager)
         entities=sensor.house_entities(coordinator,SimpleNamespace(entry_id='test'))
-        self.assertEqual(len(entities),23)
-        self.assertEqual(len({entity._attr_unique_id for entity in entities}),23)
+        self.assertEqual(len(entities),26)
+        self.assertEqual(len({entity._attr_unique_id for entity in entities}),26)
         status=next(entity for entity in entities if entity.key=='house_fit_status')
         self.assertEqual(status.native_value,'waiting')
         self.assertFalse(hasattr(status,'_attr_suggested_display_precision'))

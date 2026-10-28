@@ -7,6 +7,15 @@ Exact constant-input transitions and diffusion integrals; no Euler steps.
 
 from dataclasses import asdict, dataclass
 import math
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+
+def midnight_due(timestamp, previous, timezone):
+    """First completed local-midnight bin; retry missing room data until 01:00."""
+    local = datetime.fromtimestamp(timestamp, UTC).astimezone(ZoneInfo(timezone))
+    return local.hour == 0 and (previous is None or
+        datetime.fromtimestamp(previous, UTC).astimezone(ZoneInfo(timezone)).date() < local.date())
 
 
 @dataclass(frozen=True)
@@ -97,8 +106,10 @@ def initial_state(room, outdoor, parameters):
 class HouseEstimator:
     """Live filtering of completed five-minute input bins, without future data."""
 
-    def __init__(self, parameters=None):
+    def __init__(self, parameters=None, correction_timezone=None):
         self.parameters = parameters or HouseParameters()
+        self.correction_timezone = correction_timezone
+        self.last_correction = None
         self.timestamp = None
         self.state = None
         self.covariance = None
@@ -119,15 +130,18 @@ class HouseEstimator:
             coefficients = transition(self.parameters, (t-self.timestamp)/3600)
             self.state = advance(self.state, outdoor, heat, solar, self.parameters, coefficients)
             self.covariance = predict_covariance(self.covariance, coefficients)
-        if room is not None:
+        if room is not None and (self.correction_timezone is None or
+                midnight_due(t, self.last_correction, self.correction_timezone)):
             self.state, self.covariance, _, _ = correct(
                 self.state, self.covariance, room, self.parameters.sigma_y**2)
+            self.last_correction = t
         self.timestamp = t
 
     def snapshot(self):
         if self.state is None:
             return None
-        return {"timestamp": self.timestamp, "state": list(self.state), "covariance": list(self.covariance)}
+        return {"timestamp": self.timestamp, "state": list(self.state), "covariance": list(self.covariance),
+                "last_correction": self.last_correction}
 
     def restore(self, saved):
         try:
@@ -139,5 +153,10 @@ class HouseEstimator:
                 return False
         except (KeyError, TypeError, ValueError):
             return False
+        correction = saved.get("last_correction")
+        if correction is not None and (not isinstance(correction, (int, float)) or
+                not math.isfinite(correction) or correction > t):
+            return False
         self.timestamp, self.state, self.covariance = t, tuple(state), tuple(cov)
+        self.last_correction = correction
         return True

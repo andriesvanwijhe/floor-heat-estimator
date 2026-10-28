@@ -9,9 +9,9 @@ import time
 from datetime import UTC, datetime
 
 if __package__:
-    from .house_model import HouseParameters, advance, correct, initial_state, predict_covariance, transition
+    from .house_model import HouseEstimator, HouseParameters, advance, correct, initial_state, predict_covariance, transition
 else:
-    from house_model import HouseParameters, advance, correct, initial_state, predict_covariance, transition
+    from house_model import HouseEstimator, HouseParameters, advance, correct, initial_state, predict_covariance, transition
 
 PARAMETERS = ("ci", "ce", "rie", "rea", "solar_area", "internal_gain", "sigma_i", "sigma_e", "sigma_y")
 BOUNDS = ((.02, 1000), (.02, 1000), (.01, 100), (.01, 100), (.001, 500),
@@ -101,13 +101,19 @@ def filter_points(points, parameters, check=lambda: None, retain=False):
     return nll, count, states, innovations
 
 
-def forecast_errors(points, parameters, split_time, check=lambda: None):
+def forecast_errors(points, parameters, split_time, check=lambda: None, timezone=None):
     """Retrospective forecasts use actual future DRIVERS, no future room data.
 
     Every hourly origin uses only the filter state available at that origin.
     Each horizon is independently simulated without any measurement updates.
     """
     _, _, states, _ = filter_points(points, parameters, check, retain=True)
+    if timezone is not None:
+        engine = HouseEstimator(parameters, timezone)
+        states = []
+        for point in points:
+            engine.step(point)
+            states.append((engine.state, engine.covariance) if engine.state is not None else None)
     coefficients = transition(parameters, 1/12)
     errors = {1: [], 6: [], 24: []}
     persistence = {1: [], 6: [], 24: []}
@@ -145,29 +151,42 @@ def fit_house(request):
             raise FitDeadline("House fit exceeded the configured time limit")
 
     points = request["points"]
+    force = request.get("force", False)
     report = {"status": "insufficient_data", "accepted": False,
               "parameters": {}, "point_count": len(points),
               "model": "Bacher-Madsen-2011-Figure-1+constant-internal-gain",
               "parameter_units": {"ci": "kWh/K", "ce": "kWh/K", "rie": "K/kW", "rea": "K/kW",
                                   "solar_area": "m²", "internal_gain": "kW"},
-              "input_provenance": request.get("input_provenance", "unknown")}
+              "input_provenance": request.get("input_provenance", "unknown"),
+              "validation_correction_policy": "local_midnight" if request.get("correction_timezone") else "five_minute",
+              "forced": force, "provisional": force, "bypassed_checks": []}
     measured = [row for row in points if row[1] is not None]
     report["observation_count"] = len(measured)
+    if force and (not points or len(measured) < 96 or points[-1][0]-points[0][0] < 12*3600):
+        report["reason"] = "Even a forced fit needs twelve hours and 96 measured five-minute points"
+        return report
     if (len(measured) < 7*288*.8 or not points
             or points[-1][0]-points[0][0] < 6.9*86400):
-        report["reason"] = "Need at least seven days spanning 6.9 days, with 80% measured five-minute coverage"
-        return report
+        if not force:
+            report["reason"] = "Need at least seven days spanning 6.9 days, with 80% measured five-minute coverage"
+            return report
+        report["bypassed_checks"].append("seven_day_coverage")
     span = points[-1][0]-points[0][0]
-    split = points[-1][0]-max(2*86400, .25*span)
+    split = points[-1][0]-(.25*span if force else max(2*86400, .25*span))
     train = [row for row in points if row[0] < split]
     train_measured = [row for row in train if row[1] is not None]
     validation = [row for row in measured if row[0] >= split]
     report.update(training_end_utc=datetime.fromtimestamp(split, UTC).isoformat(),
                   training_point_count=len(train_measured), validation_point_count=len(validation))
     if len(train_measured) < 3*288*.8 or len(validation) < 2*288*.8:
-        report["reason"] = "Need at least three training days and two later validation days at 80% coverage"
+        if not force:
+            report["reason"] = "Need at least three training days and two later validation days at 80% coverage"
+            return report
+        report["bypassed_checks"].append("training_and_validation_coverage")
+    if not train_measured:
         return report
-    if not train:
+    if force and filter_points(train, HouseParameters(**request["baseline"]))[1] < 24:
+        report["reason"] = "Need 24 measured training points after continuous six-hour filter warm-up"
         return report
     ranges = {name: max(row[index] for row in train if row[index] is not None)
               -min(row[index] for row in train if row[index] is not None)
@@ -176,8 +195,10 @@ def fit_house(request):
     if (ranges["room_K"] < .5 or ranges["outdoor_K"] < 3 or ranges["heat_kW"] < .5
             or ranges["solar_kW_per_m2"] < .05
             or sum(row[4] > .05 for row in train) < 24 or sum(row[4] < .005 for row in train) < 24):
-        report.update(status="poor_excitation", reason="Need varied room/outdoor temperature and heat input, plus sunny and dark periods")
-        return report
+        if not force:
+            report.update(status="poor_excitation", reason="Need varied room/outdoor temperature and heat input, plus sunny and dark periods")
+            return report
+        report["bypassed_checks"].append("input_excitation")
 
     baseline = HouseParameters(**request["baseline"])
     lower = np.array([bound[0] if i == GAIN_INDEX else math.log(bound[0]) for i, bound in enumerate(BOUNDS)])
@@ -250,8 +271,9 @@ def fit_house(request):
     # screened. The other physical coefficients remain strictly interior.
     at_bound = bool(np.any((best.x[:GAIN_INDEX]-lower[:GAIN_INDEX])/(upper[:GAIN_INDEX]-lower[:GAIN_INDEX]) < .01)
                     or np.any((upper[:n]-best.x[:n])/(upper[:n]-lower[:n]) < .01))
-    validation_metrics, persistence = forecast_errors(points, candidate, split, check)
-    baseline_metrics, _ = forecast_errors(points, baseline, split, check)
+    timezone = request.get("correction_timezone")
+    validation_metrics, persistence = forecast_errors(points, candidate, split, check, timezone)
+    baseline_metrics, _ = forecast_errors(points, baseline, split, check, timezone)
     report.update(validation=validation_metrics, baseline_validation=baseline_metrics,
                   persistence_validation=persistence, at_physical_bound=at_bound)
     enough = all(validation_metrics.get(str(h), {}).get("count", 0) >= 4 for h in (1, 6, 24))
@@ -266,11 +288,24 @@ def fit_house(request):
         mean = sum(innovations)/len(innovations)
         denom = sum((v-mean)**2 for v in innovations)
         report["standardized_innovation_lag1"] = (sum((a-mean)*(b-mean) for a, b in zip(innovations, innovations[1:]))/denom if denom else 0)
-    report["accepted"] = bool(best.success and identified and not at_bound and validation_ok)
+    if force:
+        for passed, label in ((identified, "identifiability"), (not at_bound, "physical_bound_screen"),
+                              (validation_ok, "held_out_validation")):
+            if not passed:
+                report["bypassed_checks"].append(label)
+    report["validated"] = bool(best.success and identified and not at_bound and validation_ok)
+    report["accepted"] = bool(best.success and (force or report["validated"]))
     if report["accepted"]:
-        report.update(status="accepted", reason="Physical identification and held-out 6/24-hour forecasts passed",
+        report.update(status="forced_provisional" if force else "accepted",
+                      reason="Forced provisional fit; normal quality gates bypassed" if force else "Physical identification and held-out 6/24-hour forecasts passed",
                       parameters=candidate.to_dict())
-        if states[-1] is not None:
+        if timezone is not None:
+            engine = HouseEstimator(candidate, timezone)
+            for point in points:
+                check()
+                engine.step(point)
+            report["final_state"] = engine.snapshot()
+        elif states[-1] is not None:
             report["final_state"] = {"timestamp": points[-1][0], "state": list(states[-1][0]), "covariance": list(states[-1][1])}
     else:
         report["reason"] = ("Optimizer did not converge" if not best.success else

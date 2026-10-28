@@ -45,12 +45,12 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     async def fit_house_now(call):
         house = selected_house(call)
-        house.start_fit(apply=call.data.get("apply"))
+        house.start_fit(apply=call.data.get("apply"), force=call.data.get("force", False))
         return {"status": "queued", "entry_id": house.entry.entry_id}
 
     async def import_house_history_and_fit(call):
         house = selected_house(call)
-        house.start_fit(import_history=True, apply=call.data.get("apply"))
+        house.start_fit(import_history=True, apply=call.data.get("apply"), force=call.data.get("force", False))
         return {"status": "queued", "entry_id": house.entry.entry_id}
 
     async def reset_house_parameters(call):
@@ -67,7 +67,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     for name, handler in (("fit_house_now", fit_house_now),
                           ("import_house_history_and_fit", import_house_history_and_fit)):
         hass.services.async_register(DOMAIN, name, handler,
-            schema=vol.Schema({**entry_schema, vol.Optional("apply"): bool}),
+            schema=vol.Schema({**entry_schema, vol.Optional("apply"): bool,
+                               vol.Optional("force", default=False): bool}),
             supports_response=SupportsResponse.OPTIONAL)
     hass.services.async_register(DOMAIN, "reset_house_parameters", reset_house_parameters,
                                  schema=vol.Schema(entry_schema))

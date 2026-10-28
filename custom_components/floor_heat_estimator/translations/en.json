@@ -40,7 +40,7 @@
       },
       "house": {
         "title": "House digital twin (optional)",
-        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m\u00b2 or kW/m\u00b2. Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled. Combined occupancy and electrical heat gain enters the interior as a fitted constant, initially 500 W.",
+        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m² or kW/m². Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled. Combined occupancy and electrical heat gain enters the interior as a fitted constant, initially 500 W. The live twin corrects from the thermostat at local midnight; startup or recovery after missing inputs initializes from the room reading. Tomorrow demand reuses Open-Meteo forecast arrays and assumes steady state.",
         "data": {
           "house_enabled": "Enable house digital twin",
           "house_heat_input": "Heat delivered to the house (exponent floor output)",
@@ -50,7 +50,7 @@
           "house_ce": "Manual envelope heat capacity (kWh/K)",
           "house_rie": "Manual interior-envelope resistance (K/kW)",
           "house_rea": "Manual envelope-outdoor resistance (K/kW)",
-          "house_solar_area": "Manual effective solar area (m\u00b2)",
+          "house_solar_area": "Manual effective solar area (m²)",
           "house_learning_days": "House training window (days)",
           "house_refit_interval_days": "House refit interval (days)",
           "house_max_fit_minutes": "House fitting time limit (minutes)",
@@ -59,7 +59,9 @@
           "house_learning_enabled": "Enable scheduled house fitting",
           "house_apply_fitted_parameters": "Apply validated house parameters automatically",
           "house_import_history_on_start": "Import house history before the first automatic fit",
-          "house_internal_gain": "Manual occupancy and electrical heat gain (W)"
+          "house_internal_gain": "Manual occupancy and electrical heat gain (W)",
+          "house_forecast_source": "Open-Meteo hourly forecast array sensor",
+          "house_forecast_target": "Tomorrow forecast room temperature (°C)"
         }
       }
     },
@@ -69,7 +71,7 @@
       "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
       "invalid_parameter": "Enter a finite number inside the displayed range.",
       "learning_requires_recording": "Enable minute sample recording to use scheduled learning.",
-      "house_unsupported_unit": "Use W/kW for heat, \u00b0C/\u00b0F for outdoor temperature, and W/m\u00b2 or kW/m\u00b2 for solar irradiance."
+      "house_unsupported_unit": "Use W/kW for heat, °C/°F for outdoor temperature, and W/m² or kW/m² for solar irradiance."
     }
   },
   "options": {
@@ -112,7 +114,7 @@
       },
       "house": {
         "title": "House digital twin (optional)",
-        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m\u00b2 or kW/m\u00b2. Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled. Combined occupancy and electrical heat gain enters the interior as a fitted constant, initially 500 W.",
+        "description": "Two-state interior/envelope model from Bacher & Madsen (2011), Figure 1. Uses the room temperature selected on the first page. Solar must be irradiance in W/m² or kW/m². Check the source timestamp/averaging convention; hourly energy totals are unsupported. Manual defaults are starting guesses, not learned house properties. Existing floor operation is preserved when disabled. Combined occupancy and electrical heat gain enters the interior as a fitted constant, initially 500 W. The live twin corrects from the thermostat at local midnight; startup or recovery after missing inputs initializes from the room reading. Tomorrow demand reuses Open-Meteo forecast arrays and assumes steady state.",
         "data": {
           "house_enabled": "Enable house digital twin",
           "house_heat_input": "Heat delivered to the house (exponent floor output)",
@@ -122,7 +124,7 @@
           "house_ce": "Manual envelope heat capacity (kWh/K)",
           "house_rie": "Manual interior-envelope resistance (K/kW)",
           "house_rea": "Manual envelope-outdoor resistance (K/kW)",
-          "house_solar_area": "Manual effective solar area (m\u00b2)",
+          "house_solar_area": "Manual effective solar area (m²)",
           "house_learning_days": "House training window (days)",
           "house_refit_interval_days": "House refit interval (days)",
           "house_max_fit_minutes": "House fitting time limit (minutes)",
@@ -131,7 +133,9 @@
           "house_learning_enabled": "Enable scheduled house fitting",
           "house_apply_fitted_parameters": "Apply validated house parameters automatically",
           "house_import_history_on_start": "Import house history before the first automatic fit",
-          "house_internal_gain": "Manual occupancy and electrical heat gain (W)"
+          "house_internal_gain": "Manual occupancy and electrical heat gain (W)",
+          "house_forecast_source": "Open-Meteo hourly forecast array sensor",
+          "house_forecast_target": "Tomorrow forecast room temperature (°C)"
         }
       }
     },
@@ -141,7 +145,7 @@
       "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
       "invalid_parameter": "Enter a finite number inside the displayed range.",
       "learning_requires_recording": "Enable minute sample recording to use scheduled learning.",
-      "house_unsupported_unit": "Use W/kW for heat, \u00b0C/\u00b0F for outdoor temperature, and W/m\u00b2 or kW/m\u00b2 for solar irradiance."
+      "house_unsupported_unit": "Use W/kW for heat, °C/°F for outdoor temperature, and W/m² or kW/m² for solar irradiance."
     }
   },
   "services": {
@@ -198,6 +202,10 @@
         "apply": {
           "name": "Apply validated results",
           "description": "Override automatic application for this fit; false previews candidates."
+        },
+        "force": {
+          "name": "Force provisional fit",
+          "description": "Bypass normal data coverage, excitation, identifiability and validation gates. Requires twelve hours, 96 measured points, 24 training observations after warm-up, and a converged finite fit. Defaults to preview; set apply true explicitly to activate."
         }
       }
     },
@@ -212,6 +220,10 @@
         "apply": {
           "name": "Apply validated results",
           "description": "Override automatic application for this fit; false previews candidates."
+        },
+        "force": {
+          "name": "Force provisional fit",
+          "description": "Bypass normal data coverage, excitation, identifiability and validation gates. Requires twelve hours, 96 measured points, 24 training observations after warm-up, and a converged finite fit. Defaults to preview; set apply true explicitly to activate."
         }
       }
     },

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+
+- Add explicit forced house fitting with provisional diagnostics, relaxed data requirements and preview by default. Activation requires `force: true` and `apply: true`; scheduled fits retain normal checks.
+- Advance the live house twin every five minutes but correct from the thermostat only at local midnight. Initialize at startup or after missing drivers. Persist the last correction across restarts; validate forecasts using the same midnight correction policy.
+- Estimate tomorrow's average and peak heating demand (kW) and energy (kWh) at a configurable room setpoint, default 20 °C. Reuse the existing Open-Meteo hourly forecast sensor; subtract solar and internal gains using the active house coefficients.
+- Require complete tomorrow coverage, align preceding-hour mean GHI with temperature endpoints, handle 23/25-hour local days, and expose hourly predictions and forecast status as sensor attributes. Missing, stale or ambiguous forecasts remain unavailable.
+
 ## 0.3.1
 
 - Add a fitted constant occupancy/electrical-device heat gain directly to the house interior node, with a 500 W manual starting value.

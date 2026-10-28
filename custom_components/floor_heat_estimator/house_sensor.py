@@ -34,6 +34,9 @@ DESCRIPTIONS = (
     ("house_validation_6h", "House 6 hour validation error", "K"),
     ("house_validation_24h", "House 24 hour validation error", "K"),
     ("house_point_count", "House fit observation count", None),
+    ("house_tomorrow_heat_load", "House tomorrow average heat load", "kW"),
+    ("house_tomorrow_heat_energy", "House tomorrow heating energy", "kWh"),
+    ("house_tomorrow_peak_heat_load", "House tomorrow peak heat load", "kW"),
 )
 
 
@@ -62,6 +65,11 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
                 self._attr_device_class = SensorDeviceClass.TEMPERATURE
             elif unit in ("kW", "W"):
                 self._attr_device_class = SensorDeviceClass.POWER
+            elif unit == "kWh":
+                self._attr_device_class = SensorDeviceClass.ENERGY
+            if key.startswith("house_tomorrow_"):
+                self._attr_entity_category = None
+                self._attr_state_class = None
 
     @property
     def native_value(self):
@@ -91,6 +99,13 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
                 automatic_learning=manager.settings["house_learning_enabled"] and manager.settings["record_samples"])
         if self.key == "house_envelope_uncertainty":
             attributes["interpretation"] = "Conditional Kalman state standard deviation; excludes parameter and floor-input uncertainty"
+        if self.key == "house_interior_temperature":
+            attributes.update(correction_policy="local_midnight", timezone=manager.timezone,
+                              last_correction_utc=datetime.fromtimestamp(manager.engine.last_correction, UTC).isoformat()
+                              if manager.engine.last_correction is not None else None,
+                              initialization="Thermostat reading at startup or after missing drivers")
+        if self.key.startswith("house_tomorrow_"):
+            attributes.update(manager.forecast, forecast_entity=manager.settings["house_forecast_source"])
         if manager.engine.timestamp is not None:
             attributes["state_time_utc"] = datetime.fromtimestamp(manager.engine.timestamp, UTC).isoformat()
         parameter = self.key.removeprefix("house_")

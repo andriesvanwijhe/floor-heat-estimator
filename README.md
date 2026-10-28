@@ -281,7 +281,7 @@ Rejected, insufficient, timed-out and failed fits preserve the active coefficien
 
 ### House entities
 
-Enabling adds 23 diagnostic sensors and three buttons on the existing device. Existing floor entity unique IDs are unchanged.
+Enabling adds 23 diagnostic sensors, three tomorrow-demand sensors and three buttons on the existing device. Existing floor entity unique IDs are unchanged.
 
 | Entity name | Unit / interpretation |
 |---|---|
@@ -344,3 +344,35 @@ The manual initial value is **500 W**. Configure it as **Manual occupancy and el
 The fitter now identifies six physical coefficients jointly: Ci, Ce, Rie, Rea, effective solar area and internal gain. All existing data-coverage, excitation and held-out forecast requirements remain. The additional coefficient can be correlated with solar gain and heat loss; poorly identifiable fits are rejected while the prior/manual coefficients remain active.
 
 The upgrade preserves floor calibration, manual house settings, recordings and source history. House calibrations learned with the old zero-internal-gain model are invalidated instead of silently adding 500 W on top of coefficients that may have absorbed those gains. The model starts from the configured manual house coefficients plus 500 W (unless overridden) and schedules a fresh fit when learning is enabled. Editing the manual internal-gain starting value also invalidates active learned house coefficients, like other manual house parameter edits.
+
+
+### Midnight correction, provisional fits and tomorrow demand (v0.3.2)
+
+The live house model still integrates measured heat, outdoor temperature and solar input every five minutes. It only performs a Kalman room-temperature correction at the first valid completed midnight bin in Home Assistant's configured timezone. If the midnight room measurement is missing, it retries during the midnight hour, once per local date. This is a weighted Kalman correction, not an exact reset to the thermostat. Startup and recovery after missing driving inputs initialize from the room reading, including during the day. A brief restart preserves the last correction; upgrades discard old five-minute-corrected live state but retain fitted coefficients and training history.
+
+Fitting still uses five-minute observations for maximum-likelihood identification. Retrospective forecast validation starts from a twin replayed with midnight-only corrections, matching live operation. Future room readings never correct an individual forecast trajectory.
+
+Both house fit actions accept `force: true`. Normal eligibility and quality gates are then bypassed and explicitly listed in `bypassed_checks`; parameters are **provisional**, not validated. The irreducible minimum is twelve hours of usable inputs, 96 measured five-minute points, and 24 measured training observations after a continuous six-hour warm-up. Optimization must converge to a finite solution within physical bounds and the configured time limit. A forced fit defaults to preview even if automatic application is enabled. To activate it explicitly:
+
+```yaml
+action: floor_heat_estimator.import_house_history_and_fit
+data:
+  force: true
+  apply: true
+```
+
+Use `floor_heat_estimator.fit_house_now` to reuse already recorded/imported samples. Active provisional coefficients remain visibly labelled `forced_provisional_fit` after preview attempts or restarts. Scheduled fits always retain the normal evidence and validation gates. This force option applies to the house model; floor-model fitting is unchanged.
+
+In the third integration options page select **Open-Meteo hourly forecast array sensor**, default `sensor.open_meteo_48h_hourly_forecast_raw`, and the desired room setpoint (default **20 °C**). No extra API call is made. The selected sensor must expose equal-length `time`, `temperature_2m` (°C) and `shortwave_radiation` (W/m²) arrays. An optional `timezone` attribute identifies offset-free timestamps; otherwise Home Assistant's timezone is assumed. Explicit offsets or Unix seconds are preferred, especially across daylight-saving changes. A forecast not updated for twelve hours is unavailable; a source refreshed with old data is only as reliable as that source.
+
+The equation for each hour is:
+
+`Q_required = max(0, (T_target - T_outdoor) / (Rie + Rea) - A_solar * GHI / 1000 - Q_internal)`
+
+Power is kW. GHI is Open-Meteo's **preceding-hour mean**, paired with the average of outdoor temperature at both ends of that interval. Tomorrow is the full next local calendar day (23, 24 or 25 hours), including its final endpoint. Forecasts therefore need coverage through midnight after tomorrow. Missing, negative or invalid GHI is not replaced by zero; incomplete or ambiguous coverage makes the prediction unavailable.
+
+New sensors: **House tomorrow average heat load** (kW), **House tomorrow peak heat load** (kW), and **House tomorrow heating energy** (kWh). Their attributes include the target date, setpoint, forecast status, hourly loads and Open-Meteo attribution. Values recalculate each minute and after parameter changes, using active learned/provisional coefficients or the manual starting coefficients when no fit is active. The prediction is required thermal heat delivered to the house, not heat-pump electrical consumption.
+
+This steady-state calculation ignores the current interior/envelope state and heat capacities. It estimates the heating needed to hold the setpoint without stored-heat effects or a warm-up allowance; it does not guarantee the actual room remains at that temperature. Gains exceeding losses yield zero heating rather than negative demand. This is a forecast only and does not control the heat pump.
+
+Forecast variable conventions: [Open-Meteo documentation](https://open-meteo.com/en/docs).

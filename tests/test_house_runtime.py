@@ -198,5 +198,36 @@ class HouseRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TimeoutError):
             await runtime.run_worker({'points':[]},.00001)
 
+    async def test_forced_fit_previews_unless_apply_is_explicit_and_label_survives_restart(self):
+        candidate={**deepcopy(self.accepted),'forced':True,'provisional':True}
+        with patch.object(runtime,'prepare_fit_request',return_value=self.request), \
+             patch.object(runtime,'run_worker',AsyncMock(return_value=candidate)) as worker:
+            self.manager.start_fit(force=True)
+            await self.manager.task
+            self.assertTrue(worker.call_args.args[0]['force'])
+            self.assertEqual(worker.call_args.args[0]['correction_timezone'],'UTC')
+            self.assertIsNone(self.manager.active_parameters)
+            self.assertFalse(self.manager.report['applied'])
+            self.manager.start_fit(force=True,apply=True)
+            await self.manager.task
+        self.assertEqual(self.manager.parameter_source,'forced_provisional_fit')
+        self.assertEqual(self.manager.status,'applied_provisional')
+        restored=runtime.HouseManager(self.coordinator)
+        restored.store.saved=self.manager.store.saved
+        with patch.dict(sys.modules,modules): await restored.async_load()
+        self.assertEqual(restored.parameter_source,'forced_provisional_fit')
+        await restored.async_reset()
+        self.assertFalse(restored.active_provisional)
+
+    async def test_missing_and_stale_forecast_do_not_publish_partial_demand(self):
+        now=datetime.now(UTC)
+        self.manager.update_forecast(now)
+        self.assertEqual(self.manager.forecast['status'],'forecast_source_unavailable')
+        source=SimpleNamespace(state='ok',attributes={},last_updated=datetime.fromtimestamp(now.timestamp()-13*3600,UTC))
+        self.coordinator.hass.states.get=lambda _:source
+        self.manager.update_forecast(now)
+        self.assertEqual(self.manager.forecast['status'],'stale_forecast')
+        self.assertNotIn('house_tomorrow_heat_energy',self.manager.data())
+
 
 if __name__=='__main__':unittest.main()
