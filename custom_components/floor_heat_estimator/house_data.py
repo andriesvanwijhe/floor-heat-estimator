@@ -15,7 +15,7 @@ from .house_const import HOUSE_KEYS, HOUSE_SOURCES
 from .model import Estimator, finite_number
 from .source import numeric_state
 
-FIELDS = ("time_utc", "room", "outdoor", "heat", "solar", "calibration")
+FIELDS = ("time_utc", "room", "outdoor", "heat", "solar", "calibration", "heat_since_previous")
 
 
 def solar_state(state):
@@ -39,7 +39,9 @@ def house_signature(settings):
 
 def floor_signature(settings):
     encoded = json.dumps({key: settings[key] for key in FIT_KEYS}, sort_keys=True)
-    return source_signature(settings)+hashlib.sha256(encoded.encode()).hexdigest()[:20]
+    # Same physical coefficients with the old measurement-reset algorithm are
+    # a different heat-input calibration and must flag the house fit as stale.
+    return source_signature(settings)+hashlib.sha256(encoded.encode()).hexdigest()[:20]+':continuous-v1'
 
 
 def settings_signature(settings):
@@ -71,6 +73,17 @@ def append_row(folder, row):
     folder.mkdir(parents=True, exist_ok=True)
     file = folder/f"{row['time_utc'][:10]}.csv"
     new_file = not file.exists() or file.stat().st_size == 0
+    if not new_file:
+        with file.open(encoding='utf-8',newline='') as stream:
+            reader=csv.DictReader(stream)
+            if reader.fieldnames != list(FIELDS):
+                if not set(reader.fieldnames or ()).issubset(FIELDS):
+                    raise ValueError('Unexpected house CSV columns')
+                existing=list(reader)
+            else:
+                existing=None
+        if existing is not None:
+            write_rows(folder,row['time_utc'][:10],existing)
     with file.open("a", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=FIELDS)
         if new_file:
@@ -97,6 +110,8 @@ def read_rows(folder, now, days):
                     if cutoff <= t <= now:
                         rows[int(t//60)] = {"t": t, **{key: finite_number(row.get(key))
                             for key in ("room", "outdoor", "heat", "solar")}, "calibration": row.get("calibration") or "unknown"}
+                        if row.get('heat_since_previous') not in (None,''):
+                            rows[int(t//60)]['heat_since_previous']=finite_number(row['heat_since_previous'])
                 except (KeyError, ValueError, TypeError):
                     bad_rows += 1
     return sorted(rows.values(), key=lambda row: row["t"]), bad_rows
@@ -116,7 +131,8 @@ def make_bins(rows, maximum_gap=600, now=None):
         left, right = previous["t"], current["t"]
         if right-left <= 0 or right-left > maximum_gap:
             continue
-        valid = all(previous[key] is not None for key in ("outdoor", "heat", "solar"))
+        heat=current.get('heat_since_previous') if 'heat_since_previous' in current else previous['heat']
+        valid = previous['outdoor'] is not None and heat is not None and previous['solar'] is not None
         valid = valid and previous["calibration"] == current["calibration"]
         while left < right:
             endpoint = (math.floor(left/300)+1)*300
@@ -126,7 +142,7 @@ def make_bins(rows, maximum_gap=600, now=None):
             if valid:
                 bucket[0] += seconds
                 for index, key in enumerate(("outdoor", "heat", "solar"), 1):
-                    bucket[index] += previous[key]*seconds
+                    bucket[index] += (heat if key=='heat' else previous[key])*seconds
             bucket[6].add(previous["calibration"])
             # The first sample at/after the endpoint is not a future room
             # observation. Use it only at the actual endpoint; otherwise use
@@ -145,29 +161,32 @@ def make_bins(rows, maximum_gap=600, now=None):
 
 def prepare_fit_request(folder, floor_folder, settings, now, own_heat_source):
     rows, bad = read_rows(folder, now, settings["house_learning_days"])
+    minute_count=len(rows)
     provenance = "external_entity"
+    floor_balance = None
     if own_heat_source:
         # Raw source CSVs, never a previously generated floor estimate, are
         # replayed with one frozen floor calibration for the whole window.
         replay_settings = {**settings, "learning_days": settings["house_learning_days"]}
         floor_samples, _ = read_samples(floor_folder, replay_settings, now)
-        engine = Estimator(settings)
-        replay = {}
-        for sample in floor_samples:
-            replay[int(sample.timestamp//60)] = engine.step(sample)["nonlinear_power"]
-        for row in rows:
-            row["heat"] = replay.get(int(row["t"]//60))
-            row["calibration"] = floor_signature(settings)
+        from .floor_replay import reconstruct_floor,merge_floor_intervals
+        intervals,floor_balance=reconstruct_floor(floor_samples,settings)
+        rows=merge_floor_intervals(rows,intervals,floor_signature(settings),settings['house_max_gap_minutes']*60)
         provenance = "raw_floor_replay"
     else:
         # External sources lacking calibration metadata are explicitly marked
         # unverified. Known calibration changes form gaps, never mixed bins.
         provenance = "external_entity_calibration_not_verified"
     points = make_bins(rows, settings["house_max_gap_minutes"]*60, now)
+    coverage={key:sum(row[key] is not None for row in rows) for key in ('room','outdoor','heat','solar')}
+    if own_heat_source:
+        coverage={key:sum((current['t']-previous['t'])/60 for previous,current in zip(rows,rows[1:])
+                         if previous[key] is not None and 0<current['t']-previous['t']<=settings['house_max_gap_minutes']*60)
+                  for key in coverage}
     return {"points": points,
+            "floor_replay_energy_balance": floor_balance,
             "input_provenance": provenance, "skipped_rows": bad,
-            "minute_sample_count": len(rows),
-            "source_coverage_minutes": {key:sum(row[key] is not None for row in rows)
-                for key in ("room", "outdoor", "heat", "solar")},
+            "minute_sample_count": minute_count,
+            "source_coverage_minutes": coverage,
             "first_usable_bin_utc": datetime.fromtimestamp(points[0][0], UTC).isoformat() if points else None,
             "last_usable_bin_utc": datetime.fromtimestamp(points[-1][0], UTC).isoformat() if points else None}

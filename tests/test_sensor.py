@@ -33,7 +33,7 @@ def load_sensor():
                  "homeassistant.helpers.restore_state", "homeassistant.helpers.update_coordinator"):
         modules[name] = ModuleType(name)
     modules["homeassistant.components.sensor"].SensorDeviceClass = SimpleNamespace(
-        POWER="power", TEMPERATURE="temperature", DURATION="duration", TIMESTAMP="timestamp")
+        POWER="power", TEMPERATURE="temperature", DURATION="duration", TIMESTAMP="timestamp",ENERGY='energy')
     modules["homeassistant.components.sensor"].SensorEntity = SensorEntity
     modules["homeassistant.components.sensor"].SensorStateClass = SimpleNamespace(MEASUREMENT="measurement")
     modules["homeassistant.const"].EntityCategory = SimpleNamespace(DIAGNOSTIC="diagnostic")
@@ -119,8 +119,8 @@ class ParameterSensorTests(unittest.TestCase):
         entities = []
         hass = SimpleNamespace(data={"floor_heat_estimator": {"example": self.coordinator}})
         asyncio.run(SENSOR.async_setup_entry(hass, self.entry, entities.extend))
-        self.assertEqual(len(entities), 20)
-        self.assertEqual(len({e._attr_unique_id for e in entities}), 20)
+        self.assertEqual(len(entities), 26)
+        self.assertEqual(len({e._attr_unique_id for e in entities}), 26)
         parameter_entities = [e for e in entities if isinstance(e, SENSOR.FloorParameterSensor)]
         self.assertEqual(len(parameter_entities), 6)
         self.assertTrue(all(e._attr_entity_category == "diagnostic" for e in parameter_entities))

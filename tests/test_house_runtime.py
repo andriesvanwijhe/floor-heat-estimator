@@ -46,6 +46,24 @@ const = importlib.import_module('_house_runtime_tests.const')
 
 
 class HouseRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_house_uses_cumulative_floor_energy_for_preceding_interval(self):
+        self.manager.own_heat_source=True
+        self.coordinator.settings.update(record_samples=False,house_learning_enabled=False)
+        self.manager.recovery_attempt=1767225600.
+        def state(entity):
+            if entity==self.coordinator.settings['house_forecast_source']:return None
+            if entity==self.coordinator.settings['house_solar']:
+                return SimpleNamespace(state='200',attributes={'unit_of_measurement':'W/m²'})
+            return SimpleNamespace(state='20',attributes={'unit_of_measurement':'°C'})
+        self.coordinator.hass.states=SimpleNamespace(get=state)
+        for minute in range(6):
+            now=datetime.fromtimestamp(1767225600+minute*60,UTC)
+            await self.manager.async_update(now,{'nonlinear_power':1.,'energy_balance':{'nonlinear':{
+                'start_timestamp':1767225500.,'initial_temperature':28.,'capacity':.2,
+                'output_kWh':minute*.05}}})
+        bins=runtime.make_bins(list(self.manager.rows))
+        self.assertAlmostEqual(bins[0][3],3.,places=10)
+
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -3,7 +3,7 @@
 from .house_const import HOUSE_DEFAULTS
 
 DOMAIN = "floor_heat_estimator"
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 FIT_KEYS = ("linear_capacity", "linear_conductance", "nonlinear_capacity", "nonlinear_output_at_5k", "exponent")
 SOURCE_KEYS = ("heat_input", "room_temperature", "supply_temperature", "return_temperature", "flow", "mode")
 DEFAULTS = {
@@ -17,6 +17,9 @@ DEFAULTS = {
     "nonlinear_capacity": 0.198873,
     "nonlinear_output_at_5k": 1.615004,
     "exponent": 1.500063,
+    "exponent_min": 1.0,
+    "exponent_max": 1.6,
+    "floor_fit_max_minutes": 5.0,
     "maximum_gap_minutes": 10.0,
     "maximum_prediction_hours": 24.0,
     "record_samples": True,

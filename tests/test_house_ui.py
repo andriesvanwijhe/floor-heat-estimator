@@ -57,6 +57,12 @@ model=importlib.import_module('_house_ui_tests.house_model')
 
 
 class HouseUITests(unittest.TestCase):
+    def test_exponent_learning_bounds_are_configurable_and_ordered(self):
+        self.assertEqual(config.validate_parameters(self.defaults),{})
+        self.assertIn('exponent_min',config.parameter_schema(self.defaults))
+        self.assertEqual(config.validate_parameters({**self.defaults,'exponent_min':1.7,'exponent_max':1.6}),
+                         {'exponent_max':'invalid_exponent_range'})
+
     def test_options_grouped_by_function_and_house_edit_preserves_floor(self):
         flow=config.FloorOptionsFlow()
         flow.config_entry=SimpleNamespace(data=self.defaults,options={})

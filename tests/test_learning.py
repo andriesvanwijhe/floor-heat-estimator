@@ -44,6 +44,33 @@ model = importlib.import_module("_floor_learning_tests.model")
 
 
 class LearningTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_keeps_previously_accepted_parameters(self):
+        await self.run_fit()
+        active=self.manager.active_parameters.copy()
+        self.coordinator.hass.async_add_executor_job=AsyncMock(side_effect=TimeoutError())
+        await self.run_fit()
+        self.assertEqual(self.manager.status,'timeout')
+        self.assertEqual(self.manager.active_parameters,active)
+        self.assertEqual(self.manager.store.saved['active_parameters'],active)
+
+    async def test_old_reconstruction_version_requests_refresh_once(self):
+        self.coordinator.settings['import_history_on_start']=True
+        self.manager.history_import={'status':'completed','reconstruction_version':1}
+        self.assertTrue(self.manager.needs_history_import)
+        self.manager.history_import['reconstruction_version']=2
+        self.assertFalse(self.manager.needs_history_import)
+
+    async def test_exponent_range_edit_only_retains_compatible_active_fit(self):
+        await self.run_fit()
+        saved=self.manager.store.saved
+        for lower,retained in ((1.2,True),(1.5,False)):
+            settings={**self.coordinator.configured_settings,'exponent_min':lower}
+            other=SimpleNamespace(**{**self.coordinator.__dict__,'settings':settings})
+            manager=learning.LearningManager(other)
+            manager.store.saved=saved
+            await manager.async_load()
+            self.assertEqual(manager.active_parameters is not None,retained)
+
     def setUp(self):
         settings = {**const.DEFAULTS, "import_history_on_start": False,
                     **{key: "sensor." + key for key in const.SOURCE_KEYS}}

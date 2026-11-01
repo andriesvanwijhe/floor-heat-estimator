@@ -18,7 +18,7 @@
       },
       "parameters": {
         "title": "Underfloor model and learning",
-        "description": "Fit both water-temperature models from a rolling training window. Scheduled learning defaults to every 7 days; only candidates passing later-cycle validation can replace the active coefficients. Manual parameter changes restore manual calibration. Disable automatic application for preview fits.",
+        "description": "Fit continuous heating and cooldown histories using all valid heating measurements, balanced per cycle. Scan the exponent range from multiple starts and validate on later complete cycles, including restart errors. Default exponent range: 1.0 to 1.6. No measurement or restart resets are applied to an initialized floor state. Manual coefficient edits restore manual calibration. Preview fits preserve active coefficients.",
         "data": {
           "flow_threshold": "Minimum circulation flow (l/h)",
           "settling_minutes": "Settling period after circulation starts (minutes)",
@@ -35,7 +35,10 @@
           "maximum_fit_rmse": "Maximum validation temperature error (K)",
           "learning_enabled": "Enable scheduled learning",
           "apply_fitted_parameters": "Apply validated fitted parameters automatically",
-          "import_history_on_start": "Import Recorder history once before the first automatic fit"
+          "import_history_on_start": "Import Recorder history once before the first automatic fit",
+          "exponent_min": "Minimum fitted exponent",
+          "exponent_max": "Maximum fitted exponent",
+          "floor_fit_max_minutes": "Floor fitting time limit (minutes)"
         }
       },
       "house": {
@@ -75,7 +78,8 @@
       "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
       "invalid_parameter": "Enter a finite number inside the displayed range.",
       "learning_requires_recording": "Enable minute sample recording to use scheduled learning.",
-      "house_unsupported_unit": "Use W/kW for heat, °C/°F for outdoor temperature, and W/m² or kW/m² for solar irradiance."
+      "house_unsupported_unit": "Use W/kW for heat, °C/°F for outdoor temperature, and W/m² or kW/m² for solar irradiance.",
+      "invalid_exponent_range": "The maximum fitted exponent must be greater than the minimum."
     }
   },
   "options": {
@@ -89,7 +93,7 @@
       },
       "parameters": {
         "title": "Underfloor model and learning",
-        "description": "Fit both water-temperature models from a rolling training window. Scheduled learning defaults to every 7 days; only candidates passing later-cycle validation can replace the active coefficients. Manual parameter changes restore manual calibration. Disable automatic application for preview fits.",
+        "description": "Fit continuous heating and cooldown histories using all valid heating measurements, balanced per cycle. Scan the exponent range from multiple starts and validate on later complete cycles, including restart errors. Default exponent range: 1.0 to 1.6. No measurement or restart resets are applied to an initialized floor state. Manual coefficient edits restore manual calibration. Preview fits preserve active coefficients.",
         "data": {
           "flow_threshold": "Minimum circulation flow (l/h)",
           "settling_minutes": "Settling period after circulation starts (minutes)",
@@ -106,7 +110,10 @@
           "maximum_fit_rmse": "Maximum validation temperature error (K)",
           "learning_enabled": "Enable scheduled learning",
           "apply_fitted_parameters": "Apply validated fitted parameters automatically",
-          "import_history_on_start": "Import Recorder history once before the first automatic fit"
+          "import_history_on_start": "Import Recorder history once before the first automatic fit",
+          "exponent_min": "Minimum fitted exponent",
+          "exponent_max": "Maximum fitted exponent",
+          "floor_fit_max_minutes": "Floor fitting time limit (minutes)"
         }
       },
       "house": {
@@ -160,7 +167,8 @@
       "empty_name_or_mode": "Enter a name and the exact space-heating mode value.",
       "invalid_parameter": "Enter a finite number inside the displayed range.",
       "learning_requires_recording": "Enable minute sample recording to use scheduled learning.",
-      "house_unsupported_unit": "Use W/kW for heat, °C/°F for outdoor temperature, and W/m² or kW/m² for solar irradiance."
+      "house_unsupported_unit": "Use W/kW for heat, °C/°F for outdoor temperature, and W/m² or kW/m² for solar irradiance.",
+      "invalid_exponent_range": "The maximum fitted exponent must be greater than the minimum."
     }
   },
   "services": {

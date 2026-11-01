@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Preserve known heat/mode inputs at circulation transitions; invalidate water observations through the flow/settling gate instead. Version and refresh old Recorder imports.
+- Run continuous floor temperatures in fitting, live estimation and house heat replay: initialize missing state only, with no resets at measurements, heat-pump restarts or arbitrary six-hour intervals. Preserve compatible startup state and recover missing state from the last valid raw measurement.
+- Fit every valid heating observation with equal total weight per cycle. Hold out complete later cycles and validate temperature error, restart MAE, signed restart bias and restart RMSE before applying either floor model. Failed fits retain compatible active parameters.
+- Add configurable exponent learning bounds (default 1.0–1.6), a seven-point profile with three starts per point, and bounded refinement. Report boundary-limited/weak exponent identification and publish a local SVG training-cost plot. Add a configurable floor fitting budget, initially five minutes.
+- Add six floor temperature-error, last-restart-error and energy-balance diagnostic sensors. Report integrated heat input, emitted heat, storage changes and numerical balance residuals.
+- Preserve interval heat energy into live house bins and historical house fitting with one frozen floor calibration. Flag existing house calibration for reassessment after this heat-input algorithm change.
+- Add regression coverage for shutdown/restart import, continuous multi-cycle prediction, exponent bounds, equal cycle weights, startup snapshots, CSV upgrades and energy-preserving grid alignment.
+
 ## 0.4.1
 
 - Fix underfloor startup replay getting permanently stuck on a transient unavailable input recorded during restart.

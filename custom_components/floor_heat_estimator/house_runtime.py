@@ -105,6 +105,7 @@ class HouseManager:
         self.recovery_task=None
         self.recovery_attempt=0
         self.initialization_report={'status':'waiting'}
+        self.floor_energy_checkpoint=None
 
     @property
     def settings(self):
@@ -124,7 +125,10 @@ class HouseManager:
 
     @property
     def needs_import(self):
-        return self.settings["house_import_history_on_start"] and self.history_import is None
+        from .history_import import RECONSTRUCTION_VERSION
+        floor_version=(self.history_import or {}).get('floor_history') or {}
+        return self.settings["house_import_history_on_start"] and (self.history_import is None
+            or (self.own_heat_source and floor_version.get('reconstruction_version',0)<RECONSTRUCTION_VERSION))
 
     @property
     def next_refit(self):
@@ -247,9 +251,23 @@ class HouseManager:
                "calibration": calibration}
         if self.own_heat_source and floor_data is not None:
             row["heat"] = floor_data.get("nonlinear_power")
+            balance=(floor_data.get('energy_balance',{}).get('nonlinear')
+                     if floor_data.get('nonlinear_power') is not None else None)
+            previous=getattr(self,'floor_energy_checkpoint',None)
+            row['heat_since_previous']=None
+            if balance is not None and self.rows and previous is not None:
+                identity=tuple(balance.get(k) for k in ('start_timestamp','initial_temperature','capacity'))
+                if identity==previous['identity'] and self.rows[-1]['t']==previous['t']:
+                    seconds=row['t']-previous['t']
+                    if 0<seconds<=self.settings['house_max_gap_minutes']*60:
+                        row['heat_since_previous']=(balance['output_kWh']-previous['output_kWh'])*3600/seconds
+            self.floor_energy_checkpoint=({'identity':tuple(balance.get(k) for k in ('start_timestamp','initial_temperature','capacity')),
+                'output_kWh':balance['output_kWh'],'t':row['t']} if balance is not None else None)
         self.rows.append(row)
         if self.settings["record_samples"]:
             recorded = {"time_utc": now.isoformat(), **{key: row[key] for key in ("room", "outdoor", "heat", "solar", "calibration")}}
+            if 'heat_since_previous' in row:
+                recorded['heat_since_previous']=row['heat_since_previous'] if row['heat_since_previous'] is not None else 'unknown'
             try:
                 await self.hass.async_add_executor_job(append_row, self.folder, recorded)
             except OSError:
@@ -317,6 +335,9 @@ class HouseManager:
                         self.history_import = {"status": "error", "reason": str(err)}
                     finally:
                         self.importing = False
+                    from .history_import import RECONSTRUCTION_VERSION
+                    self.history_import['floor_history']=self.history_import.get('floor_history') or {'status':'error'}
+                    self.history_import['floor_history']['reconstruction_version']=RECONSTRUCTION_VERSION
                     self.history_import["source_signature"] = house_signature(settings)
                     await self._save(self.active_parameters, self.calibrated_floor)
                     self.coordinator.async_update_listeners()
@@ -334,6 +355,7 @@ class HouseManager:
                         if settings[option]=='prior':request['energy_prior'][parameter]=self.active_parameters[parameter]
                 self.report = await run_worker(request, settings["house_max_fit_minutes"]*60+5)
                 self.report.update(input_provenance=request["input_provenance"],
+                    floor_replay_energy_balance=request.get('floor_replay_energy_balance'),
                     minute_sample_count=request["minute_sample_count"], skipped_rows=request["skipped_rows"],
                     source_coverage_minutes=request.get("source_coverage_minutes"),
                     first_usable_bin_utc=request.get("first_usable_bin_utc"),

@@ -18,6 +18,12 @@ DESCRIPTIONS = (
     ("nonlinear_temperature", "Exponent effective temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
     ("status", "Model status", None, None),
     ("observation_age_minutes", "Time since observation", "min", SensorDeviceClass.DURATION),
+    ("linear_observation_error", "Linear temperature error", "K", None),
+    ("nonlinear_observation_error", "Exponent temperature error", "K", None),
+    ("linear_restart_error", "Linear last restart error", "K", None),
+    ("nonlinear_restart_error", "Exponent last restart error", "K", None),
+    ("linear_energy_balance_residual", "Linear energy balance residual", "kWh", None),
+    ("nonlinear_energy_balance_residual", "Exponent energy balance residual", "kWh", None),
 )
 
 # Parameters remain readable even when the model has no valid observation.
@@ -97,6 +103,10 @@ class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
         data = self.coordinator.data
         settings = self.coordinator.settings
         attributes = {"experimental": True, "measurement_valid": data["measurement_valid"],
+                      "temperature_policy": "Continuous prediction; water observations initialize only missing states",
+                      "energy_balance": data.get('energy_balance',{}),
+                      "measured_temperature": data.get('measured_temperature'),
+                      "restart_observation": data.get('restart_observation',False),
                       "initialization": getattr(self.coordinator,'initialization_report',{}),
                       "model_status": data["status"],
                       "parameter_source": getattr(self.coordinator, "parameter_source", "manual_configuration")}

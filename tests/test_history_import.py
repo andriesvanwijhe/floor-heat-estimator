@@ -59,7 +59,8 @@ class ReconstructionTests(unittest.TestCase):
         self.states[self.settings["mode"]] += [state(self.start+70, "dhw"), state(self.start+80, "hc")]
         self.states[self.settings["room_temperature"]] += [state(self.start+130, "unknown"), state(self.start+140, 20, "°C")]
         rows = self.reconstruct()
-        self.assertIsNone(rows[2]["mode"])
+        self.assertEqual(rows[2]["mode"],'hc')
+        self.assertIsNone(rows[2]['flow'])
         self.assertEqual(rows[3]["mode"], "hc")
         self.assertIsNone(rows[3]["room_temperature"])
         self.assertEqual(rows[4]["room_temperature"], 20)
@@ -73,6 +74,21 @@ class ReconstructionTests(unittest.TestCase):
         points = fitting.prepare_points(samples, self.settings)
         self.assertIsNone(points[12].observation)
         self.assertIsNotNone(points[13].observation)
+
+    def test_normal_shutdown_preserves_drivers_for_cooldown_recovery(self):
+        init=importlib.import_module('_floor_history_tests.initialization')
+        for key,value,unit in (('mode','standby',None),('flow',0,'l/h'),('heat_input',0,'W')):
+            self.states[self.settings[key]].append(state(self.start+13*60+10,value,unit))
+        rows=self.reconstruct(30)
+        self.assertEqual(rows[14]['mode'],'standby')
+        self.assertIsNone(rows[14]['flow'])
+        with TemporaryDirectory() as folder:
+            history.write_day(folder,self.settings,'2026-01-01',rows,Event())
+            samples,_=fitting.read_samples(folder,self.settings,self.start+29*60)
+        engine,report=init.replay_floor(samples,self.settings,self.start+29*60)
+        self.assertIsNotNone(engine,report)
+        self.assertEqual(report['status'],'replayed')
+        self.assertLess(engine.temperatures['nonlinear'],29)
 
     def test_downtime_and_run_restart_do_not_hold_stale_sensor_values(self):
         runs = [(self.start-100, self.start+120), (self.start+240, self.start+600)]

@@ -55,11 +55,33 @@ class InitializationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.c.engine,current)
         self.c.async_request_refresh.assert_not_awaited()
 
+    async def test_valid_restored_trajectory_beats_history_with_same_last_observation(self):
+        current=self.c.engine
+        current.last_observation=self.seed.last_observation
+        current.previous=self.seed.previous
+        current.temperatures={'linear':25.,'nonlinear':26.}
+        self.c.initialization_complete=True
+        with patch.object(history,'async_import_history',AsyncMock()),patch.object(initialization,'load_floor',return_value=(self.seed,{'status':'replayed'})):
+            await self.c._initialize_floor(100100)
+        self.assertIs(self.c.engine,current)
+        self.assertEqual(self.c.engine.temperatures['nonlinear'],26.)
+        self.assertEqual(self.c.initialization_report['status'],'retained_continuous_state')
+
     async def test_shutdown_cancels_recovery_task(self):
         self.c.initialization_task=asyncio.create_task(asyncio.sleep(100))
         await self.c.async_shutdown()
         self.assertTrue(self.c.initialization_cancel.is_set())
         self.assertTrue(self.c.initialization_task.cancelled())
+
+    async def test_snapshot_restore_requires_matching_sources_gates_and_calibration(self):
+        self.c.restored=False
+        saved=self.c.stored_state()
+        self.c.restore(saved)
+        self.assertEqual(self.c.pending_restore,saved)
+        self.c.pending_restore=None
+        self.c.settings['exponent']=1.2
+        self.c.restore(saved)
+        self.assertIsNone(self.c.pending_restore)
 
 
 if __name__=='__main__':unittest.main()

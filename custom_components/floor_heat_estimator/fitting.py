@@ -11,13 +11,14 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from typing import NamedTuple
 import time
 
 from .const import FIT_KEYS, SOURCE_KEYS
 from .model import Parameters, Sample, advance, finite_number
 
-MAX_WORK_SECONDS = 120
-MIN_CYCLES = 4
+MAX_WORK_SECONDS = 300
+MIN_CYCLES = 5
 
 
 def source_signature(settings):
@@ -117,19 +118,27 @@ def driving_power(sample, settings):
     return sample.power if sample.mode == settings["active_mode"] else 0.0
 
 
-def build_traces(points, settings):
-    """Five-minute, energy-preserving input bins, reseeded no more than every 6 h.
+class Step(NamedTuple):
+    seconds: float
+    room: float
+    power: float
+    target: float | None
+    cycle: int | None
+    restart: bool
 
-    Each bin integrates held raw power and room temperature over actual seconds.
-    Missing inputs/gaps end a trace. Only measured endpoints are scored; the
-    temperature is not reset at scored observations within a trace.
+
+def build_traces(points, settings):
+    """Continuous histories, seeded only initially or after a genuine gap.
+
+    Score every valid water observation. Off periods are energy-preserving
+    five-minute bins; first settled restart readings are never discarded.
     """
     traces = []
     seed = None
     steps = []
     previous = None
     elapsed = energy = room_integral = 0.0
-    seed_time = None
+    seen_cycles = set()
     for point in points:
         sample = point.sample
         power = driving_power(sample, settings)
@@ -138,26 +147,29 @@ def build_traces(points, settings):
         if broken:
             if seed is not None and steps:
                 traces.append((seed, steps))
-            seed, steps, seed_time = None, [], None
+            seed, steps = None, []
+            seen_cycles = set()
             elapsed = energy = room_integral = 0.0
         if power is None:
             previous = sample
             continue
         if seed is None:
             if point.observation is not None:
-                seed, seed_time = point.observation, sample.timestamp
+                seed = point.observation
+                seen_cycles.add(point.cycle)
             previous = sample
             continue
         seconds = sample.timestamp - previous.timestamp
         elapsed += seconds
         energy += driving_power(previous, settings) * seconds
         room_integral += previous.room * seconds
-        if elapsed >= 300:
-            steps.append((elapsed, room_integral / elapsed, energy / elapsed, point.observation))
+        if elapsed >= 300 or point.observation is not None:
+            restart = point.observation is not None and point.cycle not in seen_cycles
+            steps.append(Step(elapsed, room_integral / elapsed, energy / elapsed,
+                              point.observation, point.cycle, restart))
+            if point.observation is not None:
+                seen_cycles.add(point.cycle)
             elapsed = energy = room_integral = 0.0
-            if sample.timestamp - seed_time >= 21600 and point.observation is not None:
-                traces.append((seed, steps))
-                seed, seed_time, steps = point.observation, sample.timestamp, []
         previous = sample
     if seed is not None and steps:
         traces.append((seed, steps))
@@ -168,7 +180,8 @@ def simulate(traces, parameters, check=lambda: None):
     predicted, observed = [], []
     for seed, steps in traces:
         temperature = seed
-        for index, (seconds, room, power, target) in enumerate(steps):
+        for index, step in enumerate(steps):
+            seconds, room, power, target = step[:4]
             if index % 32 == 0:
                 check()
             temperature = advance(temperature, room, power, seconds, parameters)
@@ -194,26 +207,30 @@ def fit_samples(samples, settings, now, cancel=None, budget_seconds=MAX_WORK_SEC
     samples = [sample for sample in samples if cutoff <= sample.timestamp <= now]
     points = prepare_points(samples, settings)
     observed = [p for p in points if p.observation is not None and driving_power(p.sample, settings) is not None]
-    cycles = sorted({point.cycle for point in observed})
+    # Only closed circulation cycles participate in train/validation selection.
+    closed = {points[i-1].cycle for i in range(1,len(points))
+              if points[i-1].cycle is not None and points[i].cycle != points[i-1].cycle}
+    cycles = sorted({point.cycle for point in observed} & closed)
+    observed = [point for point in observed if point.cycle in cycles]
     report = {"status": "insufficient_data", "accepted": False, "models": {},
               "sample_count": len(samples), "observation_count": len(observed), "cycle_count": len(cycles),
               "learning_days": settings["learning_days"], "parameters": {}}
     if len(cycles) < MIN_CYCLES or len(observed) < 120:
-        report["reason"] = "Need at least four circulation cycles and 120 valid temperature observations"
+        report["reason"] = "Need at least five complete circulation cycles and 120 valid temperature observations"
         return report
     if observed[-1].sample.timestamp - observed[0].sample.timestamp < 86400:
         report["reason"] = "Valid observations must span at least 24 hours"
         return report
-    validation_cycle = cycles[max(3, int(len(cycles) * 0.75))]
+    validation_cycle = cycles[min(len(cycles)-2, max(3, int(len(cycles)*0.75)))]
     split = min(p.sample.timestamp for p in points if p.cycle == validation_cycle)
     train_points = [p for p in points if p.sample.timestamp < split]
-    test_points = [p for p in points if p.sample.timestamp >= split]
+    test_points = [p for p in points if p.sample.timestamp >= split and (p.cycle is None or p.cycle in cycles)]
     train = build_traces(train_points, settings)
     validation = build_traces(test_points, settings)
     train_observations = [step[3] for _, steps in train for step in steps if step[3] is not None]
     test_observations = [step[3] for _, steps in validation for step in steps if step[3] is not None]
     if len(train_observations) < 24 or len(test_observations) < 6:
-        report["reason"] = "Need 24 training and six held-out measured five-minute endpoints"
+        report["reason"] = "Need 24 training and six held-out valid water-temperature observations"
         return report
     theta = [p.observation - p.sample.room for p in observed if p.sample.timestamp < split]
     powers = [driving_power(p.sample, settings) for p in train_points
@@ -222,85 +239,16 @@ def fit_samples(samples, settings, now, cancel=None, budget_seconds=MAX_WORK_SEC
         report.update(status="poor_excitation", reason="Need varied heat input and at least 1.5 K observed temperature variation")
         return report
 
-    # Lazy imports: the live estimator does not import the numerical stack.
-    import numpy as np
-    from scipy.optimize import least_squares
-
-    report.update(status="rejected", training_end_utc=datetime.fromtimestamp(split, UTC).isoformat(),
-                  train_points=len(train_observations), validation_points=len(test_observations))
-    for name, current in (
-        ("linear", Parameters(settings["linear_capacity"], 5 * settings["linear_conductance"])),
-        ("nonlinear", Parameters(settings["nonlinear_capacity"], settings["nonlinear_output_at_5k"], settings["exponent"])),
-    ):
-        check()
-        nonlinear = name == "nonlinear"
-        lower = np.array([math.log(0.01), math.log(0.005)] + ([0.5] if nonlinear else []))
-        upper = np.array([math.log(100), math.log(50 if not nonlinear else 100)] + ([3.0] if nonlinear else []))
-
-        def unpack(values):
-            return Parameters(math.exp(values[0]), math.exp(values[1]), values[2] if nonlinear else 1.0)
-
-        def residual(values):
-            check()
-            parameters = unpack(values)
-            # Reject extremely stiff candidates before expensive integration.
-            if parameters.output_at_5k / parameters.capacity > 150:
-                return np.full(len(train_observations), 1000.0)
-            try:
-                predictions, targets = simulate(train, parameters, check)
-                return np.asarray(predictions) - targets
-            except (OverflowError, ValueError):
-                return np.full(len(train_observations), 1000.0)
-
-        starts = [(current.capacity, current.output_at_5k, current.exponent), (1.0, 2.0, 1.3)]
-        fits = []
-        for capacity, gain, exponent in starts:
-            start = np.clip([math.log(capacity), math.log(gain)] + ([exponent] if nonlinear else []),
-                            lower + 1e-5, upper - 1e-5)
-            fit = least_squares(residual, start, bounds=(lower, upper), loss="soft_l1", f_scale=0.25,
-                                max_nfev=80, diff_step=1e-4)
-            if fit.success and np.all(np.isfinite(fit.x)):
-                fits.append(fit)
-        if not fits:
-            report["reason"] = f"{name} optimizer did not converge"
-            return report
-        fit = min(fits, key=lambda result: result.cost)
-        candidate = unpack(fit.x)
-        prediction, target = simulate(validation, candidate, check)
-        baseline, _ = simulate(validation, current, check)
-        validation_rmse = float(np.sqrt(np.mean((np.array(prediction) - target) ** 2)))
-        baseline_rmse = float(np.sqrt(np.mean((np.array(baseline) - target) ** 2)))
-        train_rmse = float(np.sqrt(np.mean(residual(fit.x) ** 2)))
-        singular_values = np.linalg.svd(fit.jac, compute_uv=False)
-        condition = float(singular_values[0] / singular_values[-1]) if singular_values[-1] > 1e-10 else None
-        at_bound = bool(np.any((fit.x - lower) / (upper - lower) < 0.01)
-                        or np.any((upper - fit.x) / (upper - lower) < 0.01))
-        accepted = (not at_bound and condition is not None and condition < 10000
-                    and validation_rmse <= settings["maximum_fit_rmse"]
-                    and validation_rmse <= max(baseline_rmse * 1.05, 0.05))
-        report["models"][name] = {
-            "capacity_kWh_per_K": candidate.capacity, "output_at_5K_kW": candidate.output_at_5k,
-            "exponent": candidate.exponent, "conductance_coefficient": candidate.output_at_5k / 5 ** candidate.exponent,
-            "train_rmse_K": train_rmse, "validation_rmse_K": validation_rmse,
-            "baseline_validation_rmse_K": baseline_rmse, "condition_number": condition,
-            "at_bound": at_bound, "accepted": accepted,
-        }
-    report["accepted"] = all(model["accepted"] for model in report["models"].values())
-    if report["accepted"]:
-        linear, nonlinear = report["models"]["linear"], report["models"]["nonlinear"]
-        report["parameters"] = dict(linear_capacity=linear["capacity_kWh_per_K"],
-            linear_conductance=linear["output_at_5K_kW"] / 5,
-            nonlinear_capacity=nonlinear["capacity_kWh_per_K"],
-            nonlinear_output_at_5k=nonlinear["output_at_5K_kW"], exponent=nonlinear["exponent"])
-        report.update(status="accepted", reason="Both models passed held-out-cycle validation and identification checks")
-    else:
-        report["reason"] = "Candidate failed bounds, identifiability, absolute error or comparison with current parameters"
-    report["elapsed_seconds"] = round(time.monotonic() - began, 3)
-    return report
+    report.update(train_points=len(train_observations),validation_points=len(test_observations),
+                  training_cycle_ids=cycles[:cycles.index(validation_cycle)],
+                  validation_cycle_ids=cycles[cycles.index(validation_cycle):])
+    from .floor_identification import identify
+    return identify(train, validation, settings, report, split, check, began)
 
 
 def fit_recordings(directory, settings, now, cancel=None, include_legacy=False):
     samples, bad_rows = read_samples(directory, settings, now, include_legacy)
-    result = fit_samples(samples, settings, now, cancel)
+    result = fit_samples(samples, settings, now, cancel,
+                         budget_seconds=settings.get('floor_fit_max_minutes',5)*60)
     result.update(skipped_rows=bad_rows, included_legacy_recordings=include_legacy)
     return result

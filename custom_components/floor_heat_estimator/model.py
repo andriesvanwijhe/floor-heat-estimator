@@ -86,7 +86,7 @@ class Sample:
 
 
 class Estimator:
-    """Measurement correction and open-loop prediction for both models."""
+    """Continuous energy balance; water observations initialize or validate."""
 
     def __init__(self, settings):
         self.settings = settings
@@ -99,6 +99,28 @@ class Estimator:
         self.active_since = None
         self.last_observation = None
         self.status = "waiting_for_observation"
+        self.last_observed_run = None
+        self.energy = {}
+        self.last_restart_errors = {'linear': None, 'nonlinear': None}
+
+    def _begin_energy(self, timestamp=None):
+        self.energy = {key: {'initial_temperature': value, 'input_kWh': 0.0,
+                            'output_kWh': 0.0, 'capacity': self.parameters[key].capacity,
+                            'start_timestamp': timestamp if timestamp is not None else self.previous.timestamp if self.previous else None}
+                       for key, value in self.temperatures.items() if value is not None}
+
+    def energy_balance(self):
+        result = {}
+        for key, ledger in self.energy.items():
+            if self.temperatures[key] is None:
+                continue
+            storage = ledger['capacity'] * (self.temperatures[key]-ledger['initial_temperature'])
+            result[key] = {'input_kWh': ledger['input_kWh'], 'output_kWh': ledger['output_kWh'],
+                           'storage_change_kWh': storage,
+                           'start_timestamp': ledger.get('start_timestamp'),
+                           'capacity': ledger['capacity'], 'initial_temperature': ledger['initial_temperature'],
+                           'residual_kWh': ledger['input_kWh']-ledger['output_kWh']-storage}
+        return result
 
     def _input(self, sample):
         if sample.mode in (None, "unknown", "unavailable", ""):
@@ -123,22 +145,49 @@ class Estimator:
                              and sample.return_temperature is not None
                              and sample.timestamp - self.active_since >= self.settings["settling_minutes"] * 60)
         current_input = self._input(sample)
+        interval = None
         if self.previous:
             previous_input = self._input(self.previous)
             if (gap > self.settings["maximum_gap_minutes"] * 60 or previous_input is None
                     or self.previous.room is None):
                 self.temperatures = {"linear": None, "nonlinear": None}
+                self.energy = {}
                 self.status = "gap_requires_observation"
             else:
+                if any(key not in self.energy or self.energy[key]['capacity'] != self.parameters[key].capacity
+                       for key, value in self.temperatures.items() if value is not None):
+                    self._begin_energy()
+                outputs = {}
                 for key, temperature in self.temperatures.items():
                     if temperature is not None:
-                        self.temperatures[key] = advance(temperature, self.previous.room, previous_input, gap, self.parameters[key])
-        # Measurement correction is allowed independently of power availability;
-        # output remains unavailable until all current driving inputs are valid.
+                        updated = advance(temperature, self.previous.room, previous_input, gap, self.parameters[key])
+                        energy_in = previous_input*gap/3600
+                        energy_out = energy_in-self.parameters[key].capacity*(updated-temperature)
+                        outputs[key] = energy_out
+                        self.energy[key]['input_kWh'] += energy_in
+                        self.energy[key]['output_kWh'] += energy_out
+                        self.temperatures[key] = updated
+                if gap > 0 and len(outputs) == len(self.parameters):
+                    interval = {'start': self.previous.timestamp, 'end': sample.timestamp,
+                                'input_kWh': previous_input*gap/3600, 'output_kWh': outputs}
+        measured = (sample.supply+sample.return_temperature)/2 if observation_valid else None
+        residuals = {key: measured-temperature if measured is not None and temperature is not None else None
+                     for key, temperature in self.temperatures.items()}
+        initialized = False
+        restart = False
         if observation_valid:
-            measured = (sample.supply + sample.return_temperature) / 2
-            self.temperatures = {"linear": measured, "nonlinear": measured}
+            # Never inject/remove stored energy at a normal heating restart or
+            # subsequent reading. Only initialize an unobservable/gapped state.
+            if any(value is None for value in self.temperatures.values()):
+                self.temperatures = dict.fromkeys(self.temperatures, measured)
+                self._begin_energy(sample.timestamp)
+                initialized = True
+            else:
+                restart = self.last_observed_run != self.active_since
+                if restart:
+                    self.last_restart_errors = residuals.copy()
             self.last_observation = sample.timestamp
+            self.last_observed_run = self.active_since
             self.status = "observed"
         elif all(value is not None for value in self.temperatures.values()):
             self.status = "estimated"
@@ -159,17 +208,30 @@ class Estimator:
             "nonlinear_temperature": self.temperatures["nonlinear"] if available else None,
             "linear_power": self.parameters["linear"].output(self.temperatures["linear"], sample.room) if available else None,
             "nonlinear_power": self.parameters["nonlinear"].output(self.temperatures["nonlinear"], sample.room) if available else None,
+            "measured_temperature": measured,
+            "linear_observation_error": residuals['linear'],
+            "nonlinear_observation_error": residuals['nonlinear'],
+            "restart_observation": restart,
+            "initialized_from_measurement": initialized,
+            "interval_energy": interval,
+            "energy_balance": self.energy_balance(),
+            "linear_restart_error": self.last_restart_errors['linear'],
+            "nonlinear_restart_error": self.last_restart_errors['nonlinear'],
+            "linear_energy_balance_residual": self.energy_balance().get('linear',{}).get('residual_kWh'),
+            "nonlinear_energy_balance_residual": self.energy_balance().get('nonlinear',{}).get('residual_kWh'),
         }
 
     def snapshot(self):
-        return {"version": 1, "temperatures": self.temperatures.copy(),
+        return {"version": 2, "temperatures": self.temperatures.copy(),
                 "previous": asdict(self.previous) if self.previous else None,
-                "active_since": self.active_since, "last_observation": self.last_observation}
+                "active_since": self.active_since, "last_observation": self.last_observation,
+                "last_observed_run": self.last_observed_run, "energy": {key:dict(value) for key,value in self.energy.items()},
+                "last_restart_errors": self.last_restart_errors.copy()}
 
     def restore(self, saved):
         """Validate a stored snapshot completely before assigning any state."""
         try:
-            if saved.get("version") != 1:
+            if saved.get("version") not in (1, 2):
                 return False
             temps = {key: finite_number(saved["temperatures"][key]) for key in self.temperatures}
             raw = saved["previous"]
@@ -188,5 +250,15 @@ class Estimator:
             return False
         self.temperatures, self.previous = temps, previous
         self.last_observation, self.active_since = last, active
+        self.last_observed_run = finite_number(saved.get('last_observed_run'))
+        restart_errors=saved.get('last_restart_errors')
+        self.last_restart_errors={key:finite_number(restart_errors.get(key)) if isinstance(restart_errors,dict) else None for key in self.temperatures}
+        self._begin_energy()
+        energy = saved.get('energy')
+        if isinstance(energy, dict) and all(key in energy and isinstance(energy[key], dict)
+                and all(finite_number(energy[key].get(k)) is not None
+                        for k in ('initial_temperature', 'input_kWh', 'output_kWh', 'capacity'))
+                and energy[key]['capacity'] == self.parameters[key].capacity for key in self.energy):
+            self.energy = {key: dict(energy[key]) for key in self.energy}
         return True
 

@@ -3,6 +3,7 @@
 import asyncio
 from datetime import UTC, datetime
 import logging
+from pathlib import Path
 from threading import Event
 
 from homeassistant.exceptions import HomeAssistantError
@@ -59,7 +60,9 @@ class LearningManager:
             setattr(self, key, stamp if stamp is not None and 0 <= stamp <= self.started + 300 else None)
         if isinstance(saved.get("report"), dict):
             self.report = saved["report"]
-        if valid_parameters(saved.get("active_parameters")):
+        if valid_parameters(saved.get("active_parameters")) and (
+                self.coordinator.settings.get('exponent_min',1.) <= saved['active_parameters']['exponent']
+                <= self.coordinator.settings.get('exponent_max',1.6)):
             self.active_parameters = saved["active_parameters"]
             self._activate(self.active_parameters)
 
@@ -83,7 +86,9 @@ class LearningManager:
 
     @property
     def needs_history_import(self):
-        return self.coordinator.settings["import_history_on_start"] and self.history_import is None
+        from .history_import import RECONSTRUCTION_VERSION
+        return self.coordinator.settings["import_history_on_start"] and (self.history_import is None
+            or self.history_import.get('reconstruction_version',0) < RECONSTRUCTION_VERSION)
 
     def maybe_schedule(self, timestamp):
         due = self.next_refit
@@ -144,11 +149,25 @@ class LearningManager:
                     finally:
                         self.importing = False
                         self.coordinator.async_update_listeners()
+                    from .history_import import RECONSTRUCTION_VERSION
+                    self.history_import['reconstruction_version']=RECONSTRUCTION_VERSION
                     await self._save(self.active_parameters)
                 self.report = await self.hass.async_add_executor_job(
                     fit_recordings, directory, settings, self.last_attempt, self.cancel, include_legacy)
                 if self.history_import is not None:
                     self.report["history_import"] = self.history_import
+                from .floor_identification import profile_svg
+                svg = profile_svg(self.report)
+                if svg:
+                    path=Path(self.hass.config.path('www',DOMAIN,self.entry.entry_id,'exponent-profile.svg'))
+                    def write_plot():
+                        path.parent.mkdir(parents=True,exist_ok=True)
+                        path.write_text(svg,encoding='utf-8')
+                    try:
+                        await self.hass.async_add_executor_job(write_plot)
+                        self.report['exponent_profile_plot'] = f'/local/{DOMAIN}/{self.entry.entry_id}/exponent-profile.svg'
+                    except OSError as err:
+                        self.report['exponent_profile_plot_error']=str(err)
             should_apply = settings["apply_fitted_parameters"] if apply is None else apply
             if self.report.get("accepted") and should_apply:
                 parameters = self.report["parameters"]
@@ -169,6 +188,10 @@ class LearningManager:
             else:
                 self.report["applied"] = False
                 await self._save(self.active_parameters)
+        except TimeoutError:
+            self.report={'status':'timeout','accepted':False,'applied':False,
+                         'reason':'Floor exponent scan exceeded its configured time limit; active parameters retained'}
+            await self._save(self.active_parameters)
         except asyncio.CancelledError:
             self.cancel.set()
             raise

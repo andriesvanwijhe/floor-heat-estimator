@@ -19,6 +19,9 @@ LIMITS = {
     "nonlinear_capacity": (0.01, 100, "kWh/K"),
     "nonlinear_output_at_5k": (0.001, 100, "kW"),
     "exponent": (0.5, 3, None),
+    "exponent_min": (0.5, 3, None),
+    "exponent_max": (0.5, 3, None),
+    "floor_fit_max_minutes": (1, 30, "min"),
     "maximum_gap_minutes": (1, 60, "min"),
     "maximum_prediction_hours": (1, 168, "h"),
     "learning_days": (2, 90, "d"),
@@ -72,9 +75,11 @@ def validate_sources(hass, values):
 
 def validate_parameters(values):
     for key, (low, high, _) in LIMITS.items():
-        value = values.get(key)
+        value = values.get(key, DEFAULTS[key])
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
             return {key: "invalid_parameter"}
+    if values.get("exponent_min", DEFAULTS['exponent_min']) >= values.get("exponent_max", DEFAULTS['exponent_max']):
+        return {"exponent_max": "invalid_exponent_range"}
     if values.get("learning_enabled") and not values.get("record_samples"):
         return {"base": "learning_requires_recording"}
     return {}

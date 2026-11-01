@@ -2,7 +2,7 @@
 
 An experimental Home Assistant custom integration for estimating heat released by an underfloor heating circuit during heating and cooldown.
 
-Version 0.3.1 adds a fitted constant internal heat gain (initially 500 W) to the optional, automatically fitted house digital twin using the two-state model in Bacher & Madsen (2011), Figure 1. It includes initial Recorder history import, separate house fitting settings, hidden envelope temperature and physical-parameter entities. Models can use manual coefficients or validated learned coefficients. Floor and house identification remain separate stages of the thermal-analysis tool.
+Version 0.5.0 preserves complete floor heating/cooldown histories, adds cycle-balanced exponent-profile fitting and restart validation, and supplies energy-consistent floor heat to the optional house digital twin. The house model follows Bacher & Madsen (2011), Figure 1, with fitted constant internal heat gain (initially 500 W). It includes initial Recorder history import, separate house fitting settings, hidden envelope temperature and physical-parameter entities. Models can use manual coefficients or validated learned coefficients. Floor and house identification remain separate stages of the thermal-analysis tool.
 
 ## What it provides
 
@@ -17,9 +17,9 @@ Version 0.3.1 adds a fitted constant internal heat gain (initially 500 W) to the
 
 ## Model and assumptions
 
-The temperature observation is `(supply + return) / 2`. It is accepted only in the configured space-heating mode, above the flow threshold, after continuous circulation for the settling period. Each accepted observation corrects both models to the measured mean-water temperature.
+The temperature observation is `(supply + return) / 2`. It is accepted only in the configured space-heating mode, above the flow threshold, after continuous circulation for the settling period. Since v0.5.0, a valid observation initializes a missing state only. Subsequent observations validate the predicted temperature; they do not reset the state or inject correction energy, including at heat-pump restarts. The status `observed` means a valid measurement is available, not that the prediction was overwritten.
 
-Between accepted observations:
+The model runs continuously:
 
 ```text
 theta = effective_temperature - room_temperature
@@ -97,78 +97,45 @@ They include normalized source signals, validity, model status and estimates, pr
 
 The integration does not change heat-pump controls or existing sensors. Fitting requires SciPy 1.18.1, installed automatically by Home Assistant. It requires no external database, MQTT broker or cloud account.
 
-## Learning settings
+## Learning settings (v0.5.0)
 
-| Setting | Default | Behavior |
-|---|---|---|
-| Enable scheduled learning | On | Queue a background fit when due; manual fitting also works when disabled |
-| Training history window | 28 days | Rolling lookback, configurable from 2 to 90 days; not a required waiting period |
-| Automatic refit interval | 7 days | 1 to 90 days between attempts, including unsuccessful attempts |
-| Apply validated fitted parameters automatically | On | Off produces preview candidates without changing the active model |
-| Maximum validation temperature error | 1.0 K | Maximum permitted RMSE on later, held-out circulation cycles |
-| Record local minute samples | On | Required for scheduled learning; no estimates are used as training measurements |
-| Import Recorder history once before the first automatic fit | On | Also runs once after upgrading to 0.2.1; imports only available detailed history |
+Under **Configure > Underfloor heating**, continue past source selection to model and learning settings. The rolling training window is 2–90 days; automatic refitting defaults to every seven days. The fitted exponent range defaults to **1.0–1.6** and can be changed within 0.5–3.0 (minimum must be below maximum). The manual exponent is a starting/fallback value, independent of the learning bounds. A stored learned calibration outside the new learning range is not reactivated. Other compatible accepted coefficients survive failed fits. Both floor models must pass before either update is applied.
 
-The first automatic attempt is due about one minute after first setup with learning enabled. Subsequent attempts use the stored last-attempt time plus the configured interval. Restarts do not reset the schedule. An early insufficient-data attempt waits until the next interval; use **Fit now** after enough data has accumulated. Disabling recording also suspends automatic scheduling, including for configurations upgraded from older versions.
+The background floor worker has a configurable time budget, initially **five minutes** (1–30 minutes). Larger data windows and slower machines can require a higher budget. A timeout preserves active parameters; it does not apply a partial exponent scan.
 
-Fitting runs in an executor, with at most one numerical fit running per integration and one queued/running job per entry. The numerical worker has a 120-second budget and checks for unload/cancellation. It never changes heat-pump controls. Learned coefficients and reports are stored locally with Home Assistant's storage helper and restored after restart. Validated fits replace both models together; a rejected or interrupted attempt preserves the previously active coefficients. Live effective temperatures are preserved when new coefficients are applied.
+### Continuous identification and cycle validation
 
-### Manual fit and preview
+Water measurements are valid only in `hc` (or the configured active mode), above the flow threshold, after settling. Every valid heating measurement is scored. Room temperature and signed thermal input drive continuous prediction through settling, cooldown and restart. Off-period water temperatures are never targets. Histories are seeded at the first valid observation and after genuine missing-input gaps only; there are no periodic six-hour or per-reading resets. During off periods, inputs are integrated in energy-preserving bins up to five minutes long.
 
-Press **Fit now** on the Floor heat estimator device, or call the following action in Developer tools > Actions (also usable in automations):
+The least-squares objective is the **mean of the per-cycle mean squared temperature errors**. Each scored cycle therefore has equal total weight, without adding a separate restart penalty. Restart errors are the measured minus predicted mean water temperature at the first valid settled reading in a new circulation cycle. Heat delivered during settling is included. Positive error means the prediction was too cold.
 
-```yaml
-action: floor_heat_estimator.fit_now
-data: {}
+Eligibility requires at least **five complete circulation cycles**, 120 valid readings spanning 24 hours, 24 training and six held-out readings, varied input (0.5 kW) and at least 1.5 K observed temperature variation. A cycle must end before the data boundary. The latest cycles are held out, retaining at least three training and two validation cycles. At least one held-out restart must have a continuous prediction from the preceding cycle; a gap that causes initialization cannot be counted as a successful restart prediction.
+
+For each model, both the cycle-balanced validation RMSE and restart RMSE must pass the configured temperature-error ceiling. Validation RMSE, restart MAE and absolute signed restart bias must also not worsen the active-parameter baseline by more than 5%, with a 0.05 K floor. All comparisons use the same held-out histories. Physical capacity/gain bounds and local capacity/gain conditioning remain mandatory. Validation data do not select the optimizer's starting point or exponent.
+
+### Exponent scan and plot
+
+Seven evenly spaced fixed exponent values cover the configured range. Capacity and heat output at 5 K are fitted from **three starting points** at each value, followed by a bounded refinement of the best training solution. This reduces dependence on a single local optimization; it is not a guarantee of a global optimum.
+
+**Fit status** attributes contain `report.exponent_profile`, the best refined point, training and validation metrics, failed checks, and `report.exponent_profile_plot`. Open that relative plot URL on your Home Assistant host, for example `http://homeassistant.local:8123/local/floor_heat_estimator/<entry-id>/exponent-profile.svg`. The plot is replaced after a completed scan and contains derived calibration costs only. It is a local static file under `/config/www/floor_heat_estimator/<entry-id>/` and can also be used in a dashboard picture card.
+
+`boundary_limited` means the optimum is within 1% of an exponent bound. `weakly_identified` means grid values within the larger of 0.02 K or 5% of the best training RMSE span at least half the configured range. Otherwise the profile is labeled `resolved`. These are engineering sensitivity labels, **not statistical confidence intervals**. A boundary-limited exponent can still be applied if every predictive validation check passes; the report continues to flag its uncertainty.
+
+### Observation and energy diagnostics
+
+Six additional Underfloor diagnostic entities show linear/exponent temperature errors, the last restart errors and energy-balance residuals. Temperature error compares measurements to prediction without changing the state. A small energy residual checks numerical bookkeeping, **not physical accuracy**. Mean water temperature remains an effective-floor proxy.
+
+For an uninterrupted segment and fixed capacity:
+
+```text
+heat_pump_energy - floor_to_house_energy = C * (T_end - T_start)
 ```
 
-With multiple configurations, include `entry_id`, selectable in the action UI. The action queues a job and returns promptly. Read **Fit status** for completion; the optional action response only confirms queuing.
+The floor estimator integrates emitted energy alongside its temperature state. The house runtime receives mean power over the correct preceding interval, and house fitting reconstructs the full raw floor history with one frozen calibration. Floor and house time grids are split at interval boundaries before averaging, preserving reconstructed emitted energy. `House fit status > report.floor_replay_energy_balance` reports model totals across continuous segments. Missing driving history and expired observation periods do not become valid house heat inputs.
 
-To fit without changing active coefficients:
+The algorithm change versions the floor heat-input calibration. Existing compatible floor coefficients are retained; existing house coefficients are flagged `floor_calibration_changed` and scheduled for reassessment. A rejected new house fit retains its previous compatible parameters and the warning. After upgrading, **Import history and fit** reconstructs old imported transitions with the corrected measurement gates; then **Import house history and fit** reconstructs house heat input and refits the house. With initial automatic import enabled, the reconstruction-version change schedules those imports automatically.
 
-```yaml
-action: floor_heat_estimator.fit_now
-data:
-  apply: false
-```
-
-Omitting `apply` follows the configured application setting. Explicit `apply: true` applies candidates only if all validation checks pass. The **Fit status** report includes proposed coefficients, per-model training/validation error, baseline validation error, observation/cycle counts and rejection reasons. Parameter sensors continue showing the active values during a preview.
-
-To return to the manually configured baseline:
-
-```yaml
-action: floor_heat_estimator.reset_parameters
-data: {}
-```
-
-Reset does not remove training files or disable scheduled learning. Disable scheduled learning as well if you want to retain manual coefficients indefinitely.
-
-### Existing recordings from version 0.1
-
-Fitting uses normalized local minute CSV recordings, including imported local Recorder history when enabled (see Initial Recorder history import below). No cloud service is queried. Existing `0.1.x` recordings remain untouched in the parent folder but do not have source/measurement-gate provenance. They are excluded automatically. If their source entities and flow/mode/settling settings are unchanged, explicitly include them in a manual fit:
-
-```yaml
-action: floor_heat_estimator.fit_now
-data:
-  include_legacy: true
-  apply: false
-```
-
-Inspect the report, then run with `apply: true` if appropriate. New recordings are partitioned by source entities and measurement gates so incompatible datasets cannot mix automatically. Changing those settings starts a separate training partition. Old files are retained and can be managed separately. A source changing its physical meaning or units without an entity-ID change cannot be detected from the signature; use a new configuration for a materially different circuit.
-
-### Fit method and minimum evidence
-
-The learner uses bounded, multi-start least squares on **open-loop predicted mean-water temperature** for both models. It recomputes measurement validity from raw flow, operating mode and continuous settling time; it never fits to the integration's own predicted heat output. Unknown driving inputs and gaps terminate a simulation segment. Signed heating input is retained; non-heating modes assume zero input to the floor as in the live model.
-
-Input power and room temperature are time-weighted into approximately five-minute bins. Only valid measured bin endpoints are scored. Traces initialize at a valid measured temperature and are reseeded at most every six hours, not at each scored point. The earliest cycles train the models; the latest approximately 25% of cycles are held out. The validation segment is independently initialized at its first valid measured temperature. No validation targets are used in optimization.
-
-Minimum evidence is four circulation cycles, 120 valid minute observations spanning at least 24 hours, at least 24 training and six held-out five-minute measured endpoints, varied heat input (0.5 kW range) and at least 1.5 K observed temperature-difference variation. These thresholds are screening criteria, not proof of accurate physical identification.
-
-Candidates are rejected if optimization fails, a parameter lies within 1% of its transformed bound, the optimizer Jacobian is poorly conditioned (condition number >= 10,000), validation RMSE exceeds the configured ceiling, or validation is worse than the active model beyond a 5% allowance / 0.05 K numerical-noise floor. Both models must pass before either changes. Sparse or weak early-season data therefore leaves existing parameters intact.
-
-The parameter bounds are the same physical ranges as configuration (C 0.01-100 kWh/K, linear K 0.001-10 kW/K, exponent-model Q5 0.005-100 kW, n 0.5-3); the nonlinear optimizer rejects extremely stiff Q5/C > 150 per hour before simulation. Fits at a bound need investigation rather than automatic application.
-
-Fit status, last attempt, last applied fit, next automatic fit, both validation errors, observation count and cycle count are additional diagnostic entities. Their IDs and the fit-now button use the existing config-entry ID, so upgrading preserves the original 12 sensor IDs.
+Startup still prefers a compatible stored continuous state. If unavailable, recovery finds the last valid raw water measurement and advances from there through historical drivers to now. This is an initialization after missing state, not a normal restart correction. Bounded input-gap estimates are explicitly reported; genuinely unavailable history is not invented.
 
 ## Integration type and future house models
 
@@ -176,7 +143,7 @@ Version 0.2.0 uses Home Assistant's **service integration** classification, rath
 
 A helper was viable for the original small derived-sensor tool. A normal integration better accommodates background learning, persistent model versions, commands and diagnostics. Collection, pure model/fitting code, lifecycle/storage and HA entities now live in separate modules so additional model families can reuse the workflow.
 
-The current learned C and K belong to a **water-temperature proxy model**, not to the whole building. This release does not implement a house heat-loss or building-inertia fit. The intended next model is a room/house energy balance with metered heating input, room temperature and outdoor temperature; solar/internal gains and ventilation can be added as measured inputs or explicit uncertainty. A subsequent coupled floor-room model can represent separate floor and building heat stores. Each model needs independent chronological validation, parameter identifiability checks and clearly labelled units. Estimated floor output must not be treated as independently measured ground truth for a house fit.
+The current learned C and K belong to a **water-temperature proxy model**, not to the whole building. The optional house model below estimates house heat loss and inertia separately. A future coupled floor-room model could represent additional physical stores and losses. Each model needs independent chronological validation, parameter identifiability checks and clearly labelled units. Estimated floor output must not be treated as independently measured ground truth for a house fit.
 
 ## Development and verification
 
@@ -206,7 +173,7 @@ data:
 
 The action queues the work; inspect **Fit status** for completion. Its `history_import` attribute reports the requested window, reconstructed sample count, complete sample count, first/last complete sample and entities with no usable history. The fit report separately gives valid observations/cycles and the exact reason if fitting cannot proceed.
 
-Only the six configured entities are read, one day at a time in Recorder's database executor. Values are reconstructed on a minute grid using recorded state changes and historical units. Unchanged values are held; unavailable states are never interpolated or replaced with zero. Brief circulation/availability interruptions conservatively invalidate a minute, restarting settling. Clean Recorder-run boundaries exclude downtime; runs marked as incorrectly closed are conservatively excluded because their actual end is unknown. Recorder cannot reveal unrecorded sensor failures or recover purged history. Sensor configuration/meaning must have remained consistent over the imported period.
+Only the six configured entities are read, one day at a time in Recorder's database executor. Values are reconstructed on a minute grid using recorded state changes and historical units. Unchanged values are held; unavailable states are never interpolated or replaced with zero. Brief circulation interruptions conservatively invalidate a water-observation minute and restart settling, while retaining known mode and heat input. Actual unavailable driving inputs remain missing. Clean Recorder-run boundaries exclude downtime; runs marked as incorrectly closed are conservatively excluded because their actual end is unknown. Recorder cannot reveal unrecorded sensor failures or recover purged history. Sensor configuration/meaning must have remained consistent over the imported period.
 
 Imported CSVs live in `learning/<source-signature>/imported/`, separately from live recordings. Files are replaced atomically and deduplicated by minute, with live samples winning overlaps. Completion (including empty history or errors) is remembered across restart; use the manual action to retry after fixing Recorder or increasing the learning window. Changing source sensors or measurement gates permits a fresh automatic import. Changing only manual model parameters does not repeat the import.
 

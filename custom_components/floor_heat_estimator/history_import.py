@@ -12,6 +12,8 @@ from .const import SOURCE_KEYS
 from .fitting import source_signature
 from .source import numeric_state
 
+RECONSTRUCTION_VERSION = 2
+
 
 def reconstruct(history, settings, start, end, runs, cancel):
     """Hold recorded states on a minute grid; never interpolate missing states.
@@ -67,7 +69,10 @@ def reconstruct(history, settings, start, end, runs, cancel):
         for key in invalid:
             row[key] = None
         if gate_interrupted:
-            row["mode"] = None
+            # A circulation/mode transition invalidates a WATER observation,
+            # not the known operating mode or thermal-power driving input.
+            # None flow restarts settling without breaking the heat balance.
+            row["flow"] = None
         rows.append({"time_utc": datetime.fromtimestamp(tick, UTC).isoformat(), **row})
         previous_tick = tick
         tick += 60
@@ -144,6 +149,7 @@ async def async_import_history(hass, directory, settings, now, cancel):
     end = datetime.fromtimestamp(math.floor(now / 60) * 60, UTC)
     start = end - timedelta(days=settings["learning_days"])
     result = {"status": "completed", "source_signature": source_signature(settings),
+              "reconstruction_version": RECONSTRUCTION_VERSION,
               "requested_start_utc": start.isoformat(), "requested_end_utc": end.isoformat(),
               "sample_count": 0, "minute_count": 0, "complete_sample_count": 0,
               "first_sample_utc": None, "last_sample_utc": None,

@@ -16,6 +16,7 @@ from .const import DEFAULTS, DOMAIN, SOURCE_KEYS
 from .fitting import source_signature
 from .learning import LearningManager
 from .house_runtime import HouseManager
+from .house_data import floor_signature
 from .model import Estimator, Sample, finite_number
 from .source import numeric_state
 
@@ -70,7 +71,8 @@ class FloorCoordinator(DataUpdateCoordinator):
             return
         expected = {key: self.settings[key] for key in SOURCE_KEYS}
         gates = {key: self.settings[key] for key in ("active_mode", "flow_threshold", "settling_minutes")}
-        if stored.get("sources") == expected and stored.get("gates") == gates:
+        if (stored.get("sources") == expected and stored.get("gates") == gates
+                and stored.get('calibration') == floor_signature(self.settings)):
             # Source integrations may still be starting. Keep the snapshot until
             # current driving inputs are valid, rather than immediately losing it.
             self.pending_restore = stored
@@ -79,6 +81,7 @@ class FloorCoordinator(DataUpdateCoordinator):
         if self.pending_restore is not None:
             return self.pending_restore
         return {"sources": {key: self.settings[key] for key in SOURCE_KEYS},
+                "calibration": floor_signature(self.settings),
                 "gates": {key: self.settings[key] for key in ("active_mode", "flow_threshold", "settling_minutes")},
                 "model_state": self.engine.snapshot()}
 
@@ -102,9 +105,12 @@ class FloorCoordinator(DataUpdateCoordinator):
                 self.restored = self.engine.restore(stored)
             self.pending_restore = None
         data = self.engine.step(sample)
-        if data['measurement_valid'] and data['nonlinear_power'] is not None:
+        if data['nonlinear_power'] is not None:
             self.initialization_complete=True
-            self.initialization_report={'status':'live_observation','measurement_timestamp':sample.timestamp}
+            if data.get('initialized_from_measurement'):
+                self.initialization_report={'status':'live_observation','measurement_timestamp':sample.timestamp}
+            elif self.restored and self.initialization_report.get('status') == 'waiting':
+                self.initialization_report={'status':'restored_continuous_state','state_timestamp':sample.timestamp}
         if data['nonlinear_power'] is None:self.initialization_complete=False
         if not self.initialization_complete and (self.initialization_task is None or self.initialization_task.done()) and now.timestamp()-self.initialization_attempt > 300:
             self.initialization_attempt = now.timestamp()
@@ -147,6 +153,14 @@ class FloorCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning('Recorder recovery import failed; trying retained local samples: %s',err)
             replay_now=max(timestamp,self.engine.previous.timestamp if self.engine.previous else timestamp)
             engine,report = await self.hass.async_add_executor_job(load_floor,directory,settings,replay_now)
+            if self.initialization_complete:
+                # Entity restoration/live initialization can finish while the
+                # Recorder import is awaiting I/O. Never replace that valid
+                # continuous trajectory with a raw-temperature history seed.
+                self.initialization_report={'status':'retained_continuous_state',
+                    'reason':'A valid live or restored state became available during recovery',
+                    'state_timestamp':self.engine.previous.timestamp if self.engine.previous else timestamp}
+                return
             self.initialization_report = report
             # Never replace a newer live observation or a changed calibration.
             if engine is not None and settings == self.settings and (self.engine.last_observation is None or self.engine.last_observation <= engine.last_observation):
@@ -155,9 +169,9 @@ class FloorCoordinator(DataUpdateCoordinator):
                     if current.timestamp-engine.previous.timestamp > settings['maximum_gap_minutes']*60:
                         self.initialization_report = {'status':'initialization_incomplete','reason':'New inputs arrived too late to bridge replay'}
                         return
-                    engine.step(current)
+                    live_result=engine.step(current)
                     # Invalid live inputs must not replace a successful historical replay.
-                    if engine._input(current) is None or current.room is None:
+                    if live_result['nonlinear_power'] is None:
                         self.initialization_report={**report,'status':'initialization_incomplete','reason':'Current live inputs have not recovered yet'}
                         return
                 self.engine = engine

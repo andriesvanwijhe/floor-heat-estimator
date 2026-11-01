@@ -22,7 +22,12 @@ class ReplayTests(unittest.TestCase):
 
     def test_replay_matches_uninterrupted_model_during_cooldown(self):
         continuous=model.Estimator(self.settings)
-        for s in self.samples:continuous.step(s)
+        # Recovery is deliberately anchored at the latest raw measurement,
+        # then predicted through cooldown, rather than resetting at restarts.
+        continuous.temperatures={'linear':28.,'nonlinear':28.}
+        continuous.previous=self.samples[5]
+        continuous.last_observation=self.samples[5].timestamp
+        for s in self.samples[6:]:continuous.step(s)
         replay,report=init.replay_floor(self.samples,self.settings,self.samples[-1].timestamp)
         self.assertEqual(report['status'],'replayed')
         self.assertEqual(report['measurement_timestamp'],self.samples[5].timestamp)
