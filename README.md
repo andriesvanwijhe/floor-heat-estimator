@@ -399,3 +399,36 @@ Normal acceptance also requires at least one complete withheld 24-hour energy wi
 The full House fit status report contains `energy_signature`, `energy_training`, `energy_validation`, `baseline_energy_validation`, `energy_validated` and `energy_anchor_enforced`. Energy validation evaluates heat needed for the measured room trajectory; it is distinct from open-loop temperature-forecast validation. Active heat-loss/solar/internal-gain entities retain their applied signature attributes across previews and restarts.
 
 For a one-button override: **Settings → Devices & services → Floor Heat Estimator → device → Import and apply provisional house fit**. This imports available Recorder history, runs the forced fit and applies a converged candidate as provisional. It bypasses normal quality gates but **does not remove the energy-signature constraints or the need for a complete measured training day**. The existing manual house restore button remains available. Automatic fits do not force application.
+
+
+## Restart recovery and identifiable fitting (v0.4.0)
+
+### Underfloor initialization
+
+When floor output has no usable state, a background task looks for the last **valid measured** water-temperature observation in retained local/Recorder history. The circulation threshold, space-heating mode and settling period still apply. It initializes both models to `(supply + return)/2` at that historical timestamp and advances them with the recorded heat input and room temperature, in chronological order, using current parameters. The result seeds the live model, including when heating is off and the floor is cooling. Supply/return measurements without valid flow are never used for initialization.
+
+History imports use daily Recorder executor queries and a lookback sufficient for the configured maximum prediction age. Imported/local data are deduplicated with live recordings taking precedence. Missing mode, required power, room data, excessive gaps, expired observations or a missing history tail prevent initialization. Known non-heating mode permits zero heat input; unknown mode does not. No missing values are filled with zero. Failed recovery retries after five minutes, and normal fresh circulation observations can initialize immediately. Exposed `initialization` attributes show the recovered measurement time, replay count or reason recovery was incomplete. Unload cancels recovery work.
+
+### House state and midnight correction
+
+Midnight corrects the running model; it does not reset it. Short compatible states remain useful, and house state is now saved every minute instead of every fifteen minutes. Startup replays retained source history; missing/stale state schedules a background Recorder/history recovery, replaying raw floor inputs with the current floor calibration where applicable. A gap lacking driving inputs cannot be reconstructed by holding current power backwards. Recovery reports incomplete history if it cannot reach the current timestep. Initial cold states still use the resistance-weighted room/outdoor guess; the first valid room measurement can initialize at any time of day. Missing inputs may require another seed; state validity is never fabricated.
+
+The fit estimates a shared initial hidden-temperature offset across training segments, bounded to ±15 K relative to their equilibrium starting guess, as a nuisance parameter. That offset is included in filtering/validation and final fitted-state replay. This is an approximation for multiple disconnected segments, not a separate free initial temperature for every segment.
+
+### Physical structure and model order
+
+Overall heat loss remains anchored to the measured energy signature. Configurable log-resistance-ratio and log-capacity prior penalties (strength 0–10, default 1) reduce compensation between the split and capacities; zero disables the corresponding soft prior. Trusted accepted dynamics are preferred as prior values; otherwise the configured manual capacities and split are used.
+
+Structure checks reject resistance fractions outside 0.02–0.98, modes faster than twice the five-minute sampling interval, slow modes longer than the larger of one week and three times the training span, modal time-scale ratios below two, and capacities at their physical limits. These engineering screens are explicit assumptions, not a proof of physical identification. The fit also trains a separate 1R1C baseline on training data. Normal two-state acceptance requires at least 5% lower 6-hour and 24-hour validation RMSE than that model, alongside all energy/temperature/curvature checks. Reports include `candidate_structure`, `active_structure`, `first_order_validation` and `second_order_supported`.
+
+Force can relax evidence/forecast-coverage gates but cannot apply physically bounded or collapsed dynamics. If newly fitted dynamics are unresolved, a provisional candidate retains trusted prior capacities and resistance split while keeping the energy-anchored heat loss and gain estimates. If those prior dynamics fail the structural checks too, application is refused and the existing model is retained. `dynamics_prior_dominated` explicitly labels retained dynamics. A weakly identified hidden-node temperature is an estimate under those priors, not a measured wall temperature.
+
+### Gain learning
+
+Solar area and internal gain each have `fixed`, `prior`, and `free` choices. Defaults are `prior`. Fixed preserves the configured parameter. Prior learns with a regularization scale of the larger of 2 m² and half the prior solar area, or 250 W for internal gain; reliable previous accepted values are used as gain priors where available. Free removes the gain-prior penalty while preserving physical bounds. The signature and dynamic stages honor each choice independently. Short records no longer automatically fix both gains. Per-gain `learning_status` attributes distinguish fixed, prior-dominated, learned-with-prior and weakly identified/free values. Conditional curvature intervals still exclude energy-support/prior uncertainty.
+
+### Function grouping and upgrade
+
+One integration now has **Underfloor** and **House** device pages, each with its own controls and diagnostics. Existing entity unique IDs remain unchanged; Home Assistant retains existing entity IDs and dashboard references. Configuration opens a menu for Underfloor or House; editing one preserves the other's settings. Floor source selection and floor model/learning remain sequential under Underfloor. The House page contains its own sources, model, learning and forecast settings.
+
+House learning-policy changes invalidate incompatible saved house calibration, without deleting recorded history or floor calibration. After updating/restarting, review priors and gain modes and run the appropriate house fit. The existing Import and apply provisional house fit button remains available. This release does not change your Codex model setting, install itself on Home Assistant, or implement dynamic hourly heat-pump scheduling.

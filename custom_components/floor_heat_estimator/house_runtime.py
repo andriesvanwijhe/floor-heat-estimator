@@ -102,6 +102,9 @@ class HouseManager:
         self.minute = None
         self.rows = deque(maxlen=3000)
         self.own_heat_source = False
+        self.recovery_task=None
+        self.recovery_attempt=0
+        self.initialization_report={'status':'waiting'}
 
     @property
     def settings(self):
@@ -198,8 +201,12 @@ class HouseManager:
                 and state.get("floor") == (floor_signature(self.settings) if self.own_heat_source else None)):
             snapshot = state.get("snapshot")
             if isinstance(snapshot, dict) and isinstance(snapshot.get("timestamp"), (int, float)):
-                if 0 <= self.started-snapshot["timestamp"] <= 600:
+                if 0 <= self.started-snapshot["timestamp"] <= self.settings['house_learning_days']*86400:
                     self.engine.restore(snapshot)
+                    from .house_data import read_rows
+                    rows,_=await self.hass.async_add_executor_job(read_rows,self.folder,self.started,self.settings['house_learning_days'])
+                    for point in make_bins(rows,self.settings['house_max_gap_minutes']*60):
+                        self.engine.step(point)
 
     async def _save(self, active, calibrated_floor, intervals=None, provisional=None, energy_anchor=None):
         data = {"signature": self.signature, "active_parameters": active,
@@ -224,6 +231,9 @@ class HouseManager:
         if minute == self.minute:
             return
         self.minute = minute
+        if (self.engine.timestamp is None or now.timestamp()-self.engine.timestamp>600) and (self.recovery_task is None or self.recovery_task.done()) and now.timestamp()-self.recovery_attempt>300:
+            self.recovery_attempt=now.timestamp()
+            self.recovery_task=self.entry.async_create_background_task(self.hass,self._recover_state(now.timestamp()),f'{DOMAIN} house history recovery')
         self.update_forecast(now)
         states = {name: self.hass.states.get(self.settings[key]) for name, key in (
             ("room", "room_temperature"), ("outdoor", "house_outdoor_temperature"),
@@ -252,8 +262,7 @@ class HouseManager:
         if (self.engine.timestamp is not None
                 and now.timestamp()-self.engine.timestamp > self.settings["house_max_gap_minutes"]*60):
             self.engine.state = self.engine.covariance = self.engine.timestamp = None
-        if minute % 15 == 0:
-            await self.save_state()
+        await self.save_state()
         due = self.next_refit
         if due is not None and now.timestamp() >= due and not self.busy:
             self.start_fit(import_history=self.needs_import)
@@ -314,9 +323,15 @@ class HouseManager:
                 request = await self.hass.async_add_executor_job(
                     prepare_fit_request, self.folder, floor_folder, settings, began, self.own_heat_source)
                 request.update(baseline=self.engine.parameters.to_dict(),
+                    dynamics_prior=self.engine.parameters.to_dict() if self.active_parameters and not self.active_provisional else configured_parameters(settings).to_dict(),
+                    gain_modes={'solar_area':settings['house_solar_learning'],'internal_gain':settings['house_internal_learning']},
+                    ratio_prior_strength=settings['house_ratio_prior_strength'],capacity_prior_strength=settings['house_capacity_prior_strength'],
                     energy_prior=configured_parameters(settings).to_dict(),
                     force=force, correction_timezone=self.timezone,
                     maximum_rmse=settings["house_max_fit_rmse"], max_seconds=settings["house_max_fit_minutes"]*60)
+                if self.active_parameters and not self.active_provisional:
+                    for parameter,option in (('solar_area','house_solar_learning'),('internal_gain','house_internal_learning')):
+                        if settings[option]=='prior':request['energy_prior'][parameter]=self.active_parameters[parameter]
                 self.report = await run_worker(request, settings["house_max_fit_minutes"]*60+5)
                 self.report.update(input_provenance=request["input_provenance"],
                     minute_sample_count=request["minute_sample_count"], skipped_rows=request["skipped_rows"],
@@ -392,6 +407,10 @@ class HouseManager:
 
     async def async_shutdown(self):
         self.cancel.set()
+        if self.recovery_task and not self.recovery_task.done():
+            self.recovery_task.cancel()
+            try: await self.recovery_task
+            except asyncio.CancelledError: pass
         if self.task is not None and not self.task.done():
             self.task.cancel()
             try:
@@ -399,3 +418,34 @@ class HouseManager:
             except asyncio.CancelledError:
                 pass
         await self.save_state()
+
+    async def _recover_state(self, now):
+        self.initialization_report={'status':'loading_history'}
+        try:
+            from .house_history import async_import_house
+            settings=self.settings.copy()
+            settings['house_learning_days']=min(7,settings['house_learning_days'])
+            try:
+                await async_import_house(self.hass,str(Path(self.folder)/'imported'),settings,now,self.cancel)
+            except (ValueError,ImportError): pass
+            folder=self.hass.config.path(DOMAIN,self.entry.entry_id)
+            request=await self.hass.async_add_executor_job(prepare_fit_request,self.folder,folder,settings,now,self.own_heat_source)
+            parameters=self.engine.parameters
+            old=self.engine.snapshot()
+            def replay():
+                engine=HouseEstimator(parameters,self.timezone)
+                if old:engine.restore(old)
+                for point in request['points']:engine.step(point)
+                return engine
+            engine=await self.hass.async_add_executor_job(replay)
+            if engine.timestamp is None or now-engine.timestamp>self.settings['house_max_gap_minutes']*60:
+                self.initialization_report={'status':'initialization_incomplete','reason':'Required house input history does not reach now'}
+                return
+            if parameters!=self.engine.parameters:return
+            if self.engine.timestamp is None or engine.timestamp>=self.engine.timestamp:self.engine=engine
+            self.initialization_report={'status':'replayed','state_timestamp':engine.timestamp}
+            await self.save_state()
+            self.coordinator.async_update_listeners()
+        except asyncio.CancelledError:raise
+        except Exception as err:
+            self.initialization_report={'status':'initialization_incomplete','reason':str(err)}

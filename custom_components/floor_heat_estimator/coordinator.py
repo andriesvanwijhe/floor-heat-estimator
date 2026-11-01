@@ -1,6 +1,8 @@
 """Read source entities, update the model, and record minute samples."""
 
 import csv
+import asyncio
+from threading import Event
 from datetime import timedelta
 import logging
 from pathlib import Path
@@ -46,6 +48,11 @@ class FloorCoordinator(DataUpdateCoordinator):
         self.last_recorded_minute = None
         self.restored = False
         self.pending_restore = None
+        self.initialization_report = {"status":"waiting"}
+        self.initialization_task = None
+        self.initialization_cancel = Event()
+        self.initialization_attempt = 0
+        self.initialization_complete = False
 
     @callback
     def subscribe(self):
@@ -95,6 +102,17 @@ class FloorCoordinator(DataUpdateCoordinator):
                 self.restored = self.engine.restore(stored)
             self.pending_restore = None
         data = self.engine.step(sample)
+        if data['measurement_valid'] and data['nonlinear_power'] is not None:
+            self.initialization_complete=True
+            self.initialization_report={'status':'live_observation','measurement_timestamp':sample.timestamp}
+        if data['nonlinear_power'] is None:self.initialization_complete=False
+        if not self.initialization_complete and (self.initialization_task is None or self.initialization_task.done()) and now.timestamp()-self.initialization_attempt > 300:
+            self.initialization_attempt = now.timestamp()
+            self.initialization_task = self.entry.async_create_background_task(
+                self.hass,self._initialize_floor(now.timestamp()),f"{DOMAIN} floor history initialization")
+        if not self.initialization_complete:
+            for key in ('linear_power','nonlinear_power','linear_temperature','nonlinear_temperature'):data[key]=None
+            data['status']='initialization_incomplete'
         minute = int(now.timestamp() // 60)
         if self.settings["record_samples"] and minute != self.last_recorded_minute:
             record = {"time_utc": now.isoformat(), **numeric, "mode": mode, **data}
@@ -112,4 +130,46 @@ class FloorCoordinator(DataUpdateCoordinator):
                 _LOGGER.exception("House update failed; floor estimation continues")
         self.learning.maybe_schedule(now.timestamp())
         return data
+
+    async def _initialize_floor(self, timestamp):
+        from .initialization import load_floor
+        directory = self.hass.config.path(DOMAIN,self.entry.entry_id)
+        settings = self.settings.copy()
+        self.initialization_report = {"status":"loading_history"}
+        try:
+            try:
+                from .history_import import async_import_history
+                import_settings={**settings,'learning_days':min(settings['learning_days'],max(2,settings['maximum_prediction_hours']/24+1))}
+                await async_import_history(self.hass,directory,import_settings,timestamp,self.initialization_cancel)
+            except (ValueError,ImportError):
+                pass  # Existing local recordings remain useful without Recorder.
+            replay_now=max(timestamp,self.engine.previous.timestamp if self.engine.previous else timestamp)
+            engine,report = await self.hass.async_add_executor_job(load_floor,directory,settings,replay_now)
+            self.initialization_report = report
+            # Never replace a newer live observation or a changed calibration.
+            if engine is not None and settings == self.settings and (self.engine.last_observation is None or self.engine.last_observation <= engine.last_observation):
+                current = self.engine.previous
+                if current and current.timestamp >= engine.previous.timestamp:
+                    if current.timestamp-engine.previous.timestamp > settings['maximum_gap_minutes']*60:
+                        self.initialization_report = {'status':'initialization_incomplete','reason':'New inputs arrived too late to bridge replay'}
+                        return
+                    engine.step(current)
+                self.engine = engine
+                self.initialization_complete=True
+                self.pending_restore = None
+                await self.async_request_refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            self.initialization_report = {'status':'initialization_incomplete','reason':str(err)}
+            _LOGGER.exception('Floor initialization failed')
+
+    async def async_shutdown(self):
+        self.initialization_cancel.set()
+        if self.initialization_task and not self.initialization_task.done():
+            self.initialization_task.cancel()
+            try:
+                await self.initialization_task
+            except asyncio.CancelledError:
+                pass
 

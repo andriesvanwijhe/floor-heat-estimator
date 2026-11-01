@@ -19,6 +19,7 @@ class Flow:
     def __init_subclass__(cls,**kwargs):pass
     def async_show_form(self,**kwargs):return {'type':'form',**kwargs}
     def async_create_entry(self,**kwargs):return {'type':'create_entry',**kwargs}
+    def async_show_menu(self,**kwargs):return {'type':'menu',**kwargs}
 
 
 class CoordinatorEntity:
@@ -35,7 +36,7 @@ modules['homeassistant.config_entries'].ConfigFlow=Flow
 modules['homeassistant.config_entries'].OptionsFlow=Flow
 modules['homeassistant.core'].callback=lambda fn:fn
 selector=modules['homeassistant.helpers.selector']
-for key in ('TextSelector','EntitySelector','EntitySelectorConfig','NumberSelector','NumberSelectorConfig','BooleanSelector'):
+for key in ('TextSelector','EntitySelector','EntitySelectorConfig','NumberSelector','NumberSelectorConfig','BooleanSelector','SelectSelector','SelectSelectorConfig'):
     setattr(selector,key,lambda *args,**kwargs:kwargs)
 selector.NumberSelectorMode=SimpleNamespace(BOX='box')
 modules['homeassistant.helpers'].selector=selector
@@ -56,6 +57,17 @@ model=importlib.import_module('_house_ui_tests.house_model')
 
 
 class HouseUITests(unittest.TestCase):
+    def test_options_grouped_by_function_and_house_edit_preserves_floor(self):
+        flow=config.FloorOptionsFlow()
+        flow.config_entry=SimpleNamespace(data=self.defaults,options={})
+        flow.hass=self.hass
+        result=asyncio.run(flow.async_step_init())
+        self.assertEqual(result['menu_options'],['underfloor','house'])
+        values={**house_const.HOUSE_DEFAULTS,'house_internal_learning':'free'}
+        with patch.dict(sys.modules,modules):result=asyncio.run(flow.async_step_house(values))
+        self.assertEqual(result['data']['linear_capacity'],self.defaults['linear_capacity'])
+        self.assertEqual(result['data']['house_internal_learning'],'free')
+
     def test_provisional_button_imports_and_applies_without_yaml(self):
         house=SimpleNamespace(start_fit=Mock())
         entity=button.HouseButton(SimpleNamespace(house=house),SimpleNamespace(entry_id='test'),'force')

@@ -43,7 +43,8 @@ def floor_signature(settings):
 
 
 def settings_signature(settings):
-    raw = json.dumps({key: settings[key] for key in HOUSE_KEYS}, sort_keys=True)
+    raw = json.dumps({key: settings.get(key) for key in (*HOUSE_KEYS,
+        "house_solar_learning", "house_internal_learning", "house_ratio_prior_strength", "house_capacity_prior_strength")}, sort_keys=True)
     return house_signature(settings)+hashlib.sha256(raw.encode()).hexdigest()[:20]
 
 

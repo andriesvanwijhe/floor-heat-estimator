@@ -73,7 +73,7 @@ class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
         if not key.endswith("power"):
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)},
-            name=coordinator.settings["name"], manufacturer="Floor Heat Estimator",
+            name=coordinator.settings["name"]+" — Underfloor", manufacturer="Floor Heat Estimator",
             model="Experimental thermal model", sw_version=VERSION)
 
     async def async_added_to_hass(self):
@@ -97,6 +97,7 @@ class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
         data = self.coordinator.data
         settings = self.coordinator.settings
         attributes = {"experimental": True, "measurement_valid": data["measurement_valid"],
+                      "initialization": getattr(self.coordinator,'initialization_report',{}),
                       "model_status": data["status"],
                       "parameter_source": getattr(self.coordinator, "parameter_source", "manual_configuration")}
         if self.key == "linear_power":

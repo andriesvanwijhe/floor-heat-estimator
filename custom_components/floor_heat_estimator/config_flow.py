@@ -82,6 +82,9 @@ def validate_parameters(values):
 
 def house_schema(defaults):
     fields = {vol.Required("house_enabled", default=defaults["house_enabled"]): selector.BooleanSelector()}
+    for key in ('house_solar_learning','house_internal_learning'):
+        fields[vol.Required(key,default=defaults[key])] = selector.SelectSelector(
+            selector.SelectSelectorConfig(options=['fixed','prior','free']))
     fields[vol.Required("house_forecast_source", default=defaults["house_forecast_source"])] = selector.EntitySelector(
         selector.EntitySelectorConfig(domain=["sensor"]))
     for key in HOUSE_SOURCES:
@@ -90,13 +93,16 @@ def house_schema(defaults):
     for key, (low, high, unit) in HOUSE_LIMITS.items():
         fields[vol.Required(key, default=defaults[key])] = selector.NumberSelector(
             selector.NumberSelectorConfig(min=low, max=high, step="any",
-                mode=selector.NumberSelectorMode.BOX, unit_of_measurement=unit))
+                mode=selector.NumberSelectorMode.BOX, **({'unit_of_measurement':unit} if unit is not None else {})))
     for key in ("house_learning_enabled", "house_apply_fitted_parameters", "house_import_history_on_start"):
         fields[vol.Required(key, default=defaults[key])] = selector.BooleanSelector()
     return vol.Schema(fields)
 
 
 def validate_house(hass, values, record_samples):
+    for key in ('house_solar_learning','house_internal_learning'):
+        if values.get(key,'prior') not in ('fixed','prior','free'):
+            return {key:'invalid_parameter'}
     for key, (low, high, _) in HOUSE_LIMITS.items():
         value = values.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
@@ -156,6 +162,9 @@ class FloorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class FloorOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
+        return self.async_show_menu(step_id="init", menu_options=["underfloor", "house"])
+
+    async def async_step_underfloor(self, user_input=None):
         defaults = {**DEFAULTS, **self.config_entry.data, **self.config_entry.options}
         errors = {}
         if user_input is not None:
@@ -163,7 +172,7 @@ class FloorOptionsFlow(config_entries.OptionsFlow):
             if not errors:
                 self._sources = user_input
                 return await self.async_step_parameters()
-        return self.async_show_form(step_id="init", data_schema=source_schema(user_input or defaults), errors=errors)
+        return self.async_show_form(step_id="underfloor", data_schema=source_schema(user_input or defaults), errors=errors)
 
     async def async_step_parameters(self, user_input=None):
         defaults = {**DEFAULTS, **self.config_entry.data, **self.config_entry.options}
@@ -172,7 +181,7 @@ class FloorOptionsFlow(config_entries.OptionsFlow):
             errors = validate_parameters(user_input)
             if not errors:
                 self._parameters = user_input
-                return await self.async_step_house()
+                return self.async_create_entry(title="", data={**defaults, **self._sources, **user_input})
         return self.async_show_form(step_id="parameters", data_schema=parameter_schema(user_input or defaults), errors=errors)
 
 
@@ -180,7 +189,7 @@ class FloorOptionsFlow(config_entries.OptionsFlow):
         defaults = {**DEFAULTS, **self.config_entry.data, **self.config_entry.options}
         errors = {}
         if user_input is not None:
-            errors = validate_house(self.hass, user_input, self._parameters["record_samples"])
+            errors = validate_house(self.hass, user_input, defaults["record_samples"])
             if not errors:
-                return self.async_create_entry(title="", data={**self._sources, **self._parameters, **user_input})
+                return self.async_create_entry(title="", data={**defaults, **user_input})
         return self.async_show_form(step_id="house", data_schema=house_schema({**defaults, **(user_input or {})}), errors=errors)

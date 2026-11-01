@@ -89,5 +89,24 @@ class EnergyTests(unittest.TestCase):
         p,points=steady()
         self.assertEqual(energy.fit_signature(points[:200],p)['status'],'insufficient_energy_data')
 
+    def test_learning_modes_free_prior_fixed_are_explicit_and_distinct(self):
+        from dataclasses import replace
+        p,points=steady(8)
+        for row in points:
+            day=int(row[0]/86400)
+            row[2]=3+day*.7
+            row[4]*=(.5+.15*(day%3))
+            row[3]=(row[1]-row[2])/(p.rie+p.rea)-p.solar_area*row[4]-p.internal_gain
+        prior=replace(p,solar_area=3,internal_gain=.8)
+        fixed=energy.fit_signature(points,prior,{'solar_area':'fixed','internal_gain':'fixed'})
+        learned=energy.fit_signature(points,prior,{'solar_area':'free','internal_gain':'free'})
+        regularized=energy.fit_signature(points[:4*288],prior,{'solar_area':'prior','internal_gain':'prior'})
+        self.assertEqual(fixed['solar_area_m2'],3)
+        self.assertEqual(fixed['internal_gain_kW'],.8)
+        self.assertAlmostEqual(learned['solar_area_m2'],6,delta=.2)
+        self.assertAlmostEqual(learned['internal_gain_kW'],.5,delta=.15)
+        self.assertEqual(regularized['parameter_status']['solar_area'],'prior_dominated')
+        self.assertNotEqual(regularized['solar_area_m2'],3)
+
 
 if __name__=='__main__':unittest.main()

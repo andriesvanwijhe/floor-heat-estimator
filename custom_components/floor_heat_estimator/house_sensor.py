@@ -54,7 +54,8 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
         self.key = key
         self._attr_name = name
         self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id+'_house')},
+            name=getattr(coordinator,'settings',coordinator.house.settings)['name']+' — House',manufacturer='Floor Heat Estimator',model='House thermal model')
         if unit == "timestamp":
             self._attr_device_class = SensorDeviceClass.TIMESTAMP
         elif key != "house_fit_status":
@@ -86,6 +87,7 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self):
         manager = self.coordinator.house
         attributes = {"experimental": True, "parameter_source": manager.parameter_source,
+                      "initialization": getattr(manager,'initialization_report',{}),
                       "model": "Bacher & Madsen (2011), Figure 1 + constant internal gain",
                       "floor_calibration_changed": bool(manager.own_heat_source and manager.calibrated_floor
                           and manager.calibrated_floor != floor_signature(manager.settings)),
@@ -111,6 +113,9 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
         if manager.engine.timestamp is not None:
             attributes["state_time_utc"] = datetime.fromtimestamp(manager.engine.timestamp, UTC).isoformat()
         parameter = self.key.removeprefix("house_")
+        if parameter in ('ci','ce','rie','rea'):
+            anchor=getattr(manager,'active_energy_anchor',None) or {}
+            attributes['dynamics_prior_dominated']=anchor.get('dynamics_prior_dominated')
         interval = manager.active_intervals.get(parameter)
         if interval:
             attributes["approximate_95_percent_interval"] = (
@@ -118,6 +123,9 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
                  "unit": "W"} if parameter == "internal_gain" else interval)
         if parameter == "internal_gain":
             attributes["interpretation"] = "Fitted constant combined occupancy and electrical-device heat gain into the interior node"
+        if parameter in ('internal_gain','solar_area'):
+            anchor=getattr(manager,'active_energy_anchor',None) or {}
+            attributes['learning_status']=anchor.get('parameter_status',{}).get(parameter,'unknown')
         resistance = {"house_hie": "rie", "house_hea": "rea"}.get(self.key)
         if resistance and resistance in manager.active_intervals:
             interval = manager.active_intervals[resistance]

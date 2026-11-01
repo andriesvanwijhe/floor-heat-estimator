@@ -45,6 +45,7 @@ class HouseButton(FitNowButton):
     def __init__(self, coordinator, entry, action):
         super().__init__(coordinator, entry)
         self.action = action
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN,entry.entry_id+'_house')})
         self._attr_name = {"fit": "Fit house now", "import": "Import house history and fit",
                            "force": "Import and apply provisional house fit",
                            "reset": "Restore manual house parameters"}[action]

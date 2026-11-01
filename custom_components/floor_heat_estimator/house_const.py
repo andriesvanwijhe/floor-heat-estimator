@@ -21,6 +21,10 @@ HOUSE_DEFAULTS = {
     "house_import_history_on_start": True,
     "house_forecast_source": "sensor.open_meteo_48h_hourly_forecast_raw",
     "house_forecast_target": 20.0,
+    "house_solar_learning": "prior",
+    "house_internal_learning": "prior",
+    "house_ratio_prior_strength": 1.0,
+    "house_capacity_prior_strength": 1.0,
 }
 
 HOUSE_KEYS = ("house_ci", "house_ce", "house_rie", "house_rea", "house_solar_area", "house_internal_gain")
@@ -38,4 +42,6 @@ HOUSE_LIMITS = {
     "house_max_fit_rmse": (0.05, 5, "K"),
     "house_max_gap_minutes": (5, 60, "min"),
     "house_forecast_target": (5, 30, "°C"),
+    "house_ratio_prior_strength": (0, 10, None),
+    "house_capacity_prior_strength": (0, 10, None),
 }

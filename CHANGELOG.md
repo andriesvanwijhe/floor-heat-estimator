@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Initialize the underfloor model from its last valid measured supply/return mean and replay historical heat input and room temperature to now, including cooldown. Run recovery in a cancellable background task; report incomplete history instead of assuming zero power or a cold floor.
+- Add sampling/record-length thermal-mode checks, configurable resistance/capacity priors, an independently fitted first-order validation benchmark, and an estimated segment-initial hidden-temperature offset. Normal second-order fits must improve held-out 6/24-hour predictions over the first-order benchmark.
+- Provisional fits retain trusted prior dynamics when new capacities/resistance split are unidentified. Physical bounds and structural failures are no longer bypassed by Force; unsupported priors also prevent application.
+- Add per-gain fixed/prior/free learning modes, defaulting to prior. Regularized gains can learn on short records and explicitly report prior dependence. Fixed gain intervals are not presented as learned confidence intervals.
+- Split house entities/buttons onto a House device and keep floor entities on Underfloor. Preserve entity unique IDs. Add separate House/Underfloor configuration-menu paths that preserve the other function's settings.
+- Save house state every minute and replay retained history/Recorder inputs on recovery, retaining midnight-only measurement correction. Initialization and missing-history diagnostics are exposed as attributes.
+- Changing house inference settings invalidates older house calibrations while retaining raw history and floor calibration. Refit after updating. The heat-demand forecast remains steady-state; this release does not add heat-pump control.
+
 ## 0.3.3
 
 - Anchor house heat loss to a matched 24/72-hour energy signature before fitting dynamics, including a room-storage nuisance term. Fit solar/internal gains only when the signature has sufficient duration and independent variation; otherwise provisional fits retain configured gains.

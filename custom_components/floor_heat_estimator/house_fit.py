@@ -9,9 +9,11 @@ import time
 from datetime import UTC, datetime
 
 if __package__:
+    from .house_structure import structure, first_order_errors
     from .house_energy import constrain, energy_metrics, fit_signature
     from .house_model import HouseEstimator, HouseParameters, advance, correct, initial_state, predict_covariance, transition
 else:
+    from house_structure import structure, first_order_errors
     from house_energy import constrain, energy_metrics, fit_signature
     from house_model import HouseEstimator, HouseParameters, advance, correct, initial_state, predict_covariance, transition
 
@@ -63,7 +65,7 @@ def observed_information(objective, values, h=.002):
     return hessian
 
 
-def filter_points(points, parameters, check=lambda: None, retain=False):
+def filter_points(points, parameters, check=lambda: None, retain=False, initial_offset=0):
     """Innovations likelihood; diffuse hidden-state initialization per segment.
 
     Discard the first six hours of each segment from the likelihood while
@@ -84,6 +86,7 @@ def filter_points(points, parameters, check=lambda: None, retain=False):
                 last = None
                 continue
             state, covariance = initial_state(observed, outdoor, parameters)
+            state=(state[0],state[1]+initial_offset)
             segment_start = t
         else:
             state = advance(state, outdoor, heat, solar, parameters, coefficients)
@@ -103,19 +106,27 @@ def filter_points(points, parameters, check=lambda: None, retain=False):
     return nll, count, states, innovations
 
 
-def forecast_errors(points, parameters, split_time, check=lambda: None, timezone=None):
+def daily_states(points,parameters,timezone,initial_offset=0):
+    engine=HouseEstimator(parameters,timezone)
+    states=[]
+    for point in points:
+        seed=engine.timestamp is None or point[0]-engine.timestamp>301
+        engine.step(point)
+        if seed and engine.state is not None:
+            engine.state=(engine.state[0],engine.state[1]+initial_offset)
+        states.append((engine.state,engine.covariance) if engine.state is not None else None)
+    return engine,states
+
+
+def forecast_errors(points, parameters, split_time, check=lambda: None, timezone=None, initial_offset=0):
     """Retrospective forecasts use actual future DRIVERS, no future room data.
 
     Every hourly origin uses only the filter state available at that origin.
     Each horizon is independently simulated without any measurement updates.
     """
-    _, _, states, _ = filter_points(points, parameters, check, retain=True)
+    _, _, states, _ = filter_points(points, parameters, check, retain=True,initial_offset=initial_offset)
     if timezone is not None:
-        engine = HouseEstimator(parameters, timezone)
-        states = []
-        for point in points:
-            engine.step(point)
-            states.append((engine.state, engine.covariance) if engine.state is not None else None)
+        _,states=daily_states(points,parameters,timezone,initial_offset)
     coefficients = transition(parameters, 1/12)
     errors = {1: [], 6: [], 24: []}
     persistence = {1: [], 6: [], 24: []}
@@ -204,7 +215,9 @@ def fit_house(request):
 
     baseline = HouseParameters(**request["baseline"])
     energy_prior = HouseParameters(**request.get("energy_prior",request["baseline"]))
-    signature = fit_signature(train,energy_prior)
+    dynamics_prior=HouseParameters(**request.get('dynamics_prior',energy_prior.to_dict()))
+    gain_modes=request.get('gain_modes')
+    signature = fit_signature(train,energy_prior,gain_modes)
     report["energy_signature"] = signature
     if "heat_loss_support_kW_K" not in signature:
         report.update(status="insufficient_data",reason=signature["reason"])
@@ -230,30 +243,45 @@ def fit_house(request):
         lower[4] = math.log(max(.001,signature['solar_area_m2']*.5))
         upper[4] = math.log(min(500,signature['solar_area_m2']*1.5))
         lower[5],upper[5] = max(0,signature['internal_gain_kW']-.5),min(5,signature['internal_gain_kW']+.5)
+    for i,key in ((4,'solar_area'),(5,'internal_gain')):
+        if gain_modes and gain_modes[key]=='free':
+            lower[i],upper[i]=(math.log(BOUNDS[i][0]),math.log(BOUNDS[i][1])) if i==4 else BOUNDS[i]
 
     def anchored(values):
         raw = unpack(values)
         h,ratio = math.exp(values[2]),math.exp(values[3])
         data = raw.to_dict()
         data.update(rie=ratio/(h*(1+ratio)),rea=1/(h*(1+ratio)))
-        if fixed_gains:
-            data.update(solar_area=signature['solar_area_m2'],internal_gain=signature['internal_gain_kW'])
+        for key in ('solar_area','internal_gain'):
+            if signature['gain_modes'][key]=='fixed':
+                data[key]=getattr(energy_prior,key)
         return HouseParameters(**data)
 
     seed = constrain(energy_prior,signature)
     initial = np.array(pack(seed))
     initial[2:4] = math.log(1/(seed.rie+seed.rea)),math.log(seed.rie/seed.rea)
     initial = np.clip(initial,lower+1e-6,upper-1e-6)
+    # Estimate a shared segment-initial Te offset as a nuisance variable;
+    # physical parameters must not compensate for a fixed equilibrium guess.
+    lower,upper=np.append(lower,-15),np.append(upper,15)
+    initial=np.append(initial,0)
 
     def objective(values):
         check()
         try:
             candidate = anchored(values)
-            likelihood = filter_points(train,candidate,check)[0]
+            likelihood = filter_points(train,candidate,check,initial_offset=values[-1])[0]
             metrics = energy_metrics(train,candidate,signature['windows'])
             # Daily-energy residual cannot be hidden by fitted process noise.
             error = metrics.get('rmse_mean_load_kW',1e6)
-            return likelihood+.5*signature['independent_days']*(error/.15)**2
+            penalty=0.0
+            for key in ('solar_area','internal_gain'):
+                if gain_modes and gain_modes[key]=='prior':
+                    width=max(2,energy_prior.solar_area*.5) if key=='solar_area' else .25
+                    penalty+=((getattr(candidate,key)-getattr(energy_prior,key))/width)**2
+            penalty+=request.get('ratio_prior_strength',0)*math.log((candidate.rie/candidate.rea)/(dynamics_prior.rie/dynamics_prior.rea))**2
+            penalty+=request.get('capacity_prior_strength',0)*sum(math.log(getattr(candidate,k)/getattr(dynamics_prior,k))**2 for k in ('ci','ce'))
+            return likelihood+.5*signature['independent_days']*(error/.15)**2+.5*penalty
         except (ValueError, OverflowError, ZeroDivisionError):
             return 1e30
 
@@ -261,7 +289,7 @@ def fit_house(request):
     offsets = ([0]*len(PARAMETERS), [-.5, .5, -.5, .4, .3, .2, 0, 0, 0],
                [.5, -.3, .4, -.4, -.3, -.2, 0, 0, 0])
     for offset in offsets[:request.get("starts", 3)]:
-        start = np.clip(initial+offset, lower+.01, upper-.01)
+        start = np.clip(initial+[*offset,0], lower+1e-6, upper-1e-6)
         # First identify physical dynamics with fixed small noise scales.
         # Free process noise from the first iteration can absorb a poor initial
         # RC model and trap optimisation at an unphysical, high-noise optimum.
@@ -281,9 +309,22 @@ def fit_house(request):
         return report
     best = min(fits, key=lambda result: result.fun)
     candidate = anchored(best.x)
+    structural=structure(candidate,(train[-1][0]-train[0][0])/3600)
+    report['candidate_structure']=structural
+    restricted=False
+    if force and not structural['supported']:
+        from dataclasses import replace
+        h=1/(candidate.rie+candidate.rea)
+        fraction=dynamics_prior.rie/(dynamics_prior.rie+dynamics_prior.rea)
+        candidate=replace(candidate,ci=dynamics_prior.ci,ce=dynamics_prior.ce,
+                          rie=fraction/h,rea=(1-fraction)/h)
+        restricted=True
+        structural=structure(candidate,(train[-1][0]-train[0][0])/3600)
+    report.update(active_structure=structural,dynamics_prior_dominated=restricted)
     report.update(status="rejected", optimizer_converged=bool(best.success),
                   optimizer_message=str(best.message), combined_objective=float(best.fun),
-                  negative_log_likelihood=filter_points(train,candidate,check)[0],
+                  negative_log_likelihood=filter_points(train,candidate,check,initial_offset=best.x[-1])[0],
+                  initial_hidden_offset_K=float(best.x[-1]),
                   candidate_parameters=candidate.to_dict())
 
     # Observed-information Hessian in optimizer coordinates, including nuisance noise
@@ -293,15 +334,19 @@ def fit_house(request):
     n = PHYSICAL_COUNT
     physical = hessian[:n, :n]-hessian[:n, n:]@np.linalg.pinv(hessian[n:, n:])@hessian[n:, :n]
     physical = (physical+physical.T)/2
-    eigenvalues = np.linalg.eigvalsh(physical)
+    active_indices=[i for i,key in enumerate(PARAMETERS[:n]) if key not in signature['gain_modes'] or signature['gain_modes'][key]!='fixed']
+    reduced=physical[np.ix_(active_indices,active_indices)]
+    eigenvalues = np.linalg.eigvalsh(reduced)
     support_fraction = (best.x[2]-lower[2])/(upper[2]-lower[2])
     support_bound = support_fraction < .01 or support_fraction > .99
     report['at_energy_support_bound'] = bool(support_bound)
-    identified = bool(not fixed_gains and not support_bound and eigenvalues[0] > 1e-6 and eigenvalues[-1]/eigenvalues[0] < 1e7)
+    enough_signature=signature['signature_identifiable'] or (fixed_gains and signature['window_count']>=12 and signature['independent_days']>=5)
+    identified = bool(not restricted and enough_signature and not support_bound and eigenvalues[0] > 1e-6 and eigenvalues[-1]/eigenvalues[0] < 1e7)
     intervals = {}
     condition = float(eigenvalues[-1]/eigenvalues[0]) if eigenvalues[0] > 0 else None
     if identified:
-        covariance = np.linalg.inv(physical)
+        covariance = np.zeros((n,n))
+        covariance[np.ix_(active_indices,active_indices)]=np.linalg.inv(reduced)
         # Transform log(H), log(Rie/Rea) curvature into log-resistance
         # coordinates before publishing physical resistance intervals.
         jacobian = np.eye(n)
@@ -313,6 +358,7 @@ def fit_house(request):
         identified = bool(np.max(deviations[:GAIN_INDEX]) < 1.1
                           and deviations[GAIN_INDEX] <= max(.1, 2*candidate.internal_gain))
         for i, key in enumerate(PARAMETERS[:PHYSICAL_COUNT]):
+            if signature['gain_modes'].get(key)=='fixed':continue
             uncertainty = min(float(deviations[i])*1.96, 30)
             value = getattr(candidate, key)
             if key == "internal_gain":
@@ -323,6 +369,17 @@ def fit_house(request):
                                   "log_standard_error": float(deviations[i])}
     report.update(identifiable=identified, information_condition=condition,
                   approximate_confidence_intervals=intervals)
+    if force and not identified and not restricted:
+        from dataclasses import replace
+        h=1/(candidate.rie+candidate.rea)
+        fraction=dynamics_prior.rie/(dynamics_prior.rie+dynamics_prior.rea)
+        candidate=replace(candidate,ci=dynamics_prior.ci,ce=dynamics_prior.ce,
+                          rie=fraction/h,rea=(1-fraction)/h)
+        restricted=True
+        structural=structure(candidate,(train[-1][0]-train[0][0])/3600)
+        report.update(candidate_parameters=candidate.to_dict(),active_structure=structural,
+                      dynamics_prior_dominated=True,approximate_confidence_intervals={})
+    signature['dynamics_prior_dominated']=restricted
     # Zero internal gains are physically admissible; only its upper bound is
     # screened. The other physical coefficients remain strictly interior.
     physical_values = np.array(pack(candidate))
@@ -331,10 +388,14 @@ def fit_house(request):
     at_bound = bool(np.any((physical_values[:GAIN_INDEX]-physical_lower[:GAIN_INDEX])/(physical_upper[:GAIN_INDEX]-physical_lower[:GAIN_INDEX]) < .01)
                     or np.any((physical_upper[:n]-physical_values[:n])/(physical_upper[:n]-physical_lower[:n]) < .01))
     timezone = request.get("correction_timezone")
-    validation_metrics, persistence = forecast_errors(points, candidate, split, check, timezone)
+    offset=0 if restricted else float(best.x[-1])
+    validation_metrics, persistence = forecast_errors(points, candidate, split, check, timezone,offset)
     baseline_metrics, _ = forecast_errors(points, baseline, split, check, timezone)
     report.update(validation=validation_metrics, baseline_validation=baseline_metrics,
                   persistence_validation=persistence, at_physical_bound=at_bound)
+    first_order=first_order_errors(points,split,check)
+    model_order_ok=bool(first_order and all(validation_metrics.get(str(h),{}).get('rmse_K',1e9)<first_order.get(str(h),{}).get('rmse_K',0)*.95 for h in (6,24)))
+    report.update(first_order_validation=first_order,second_order_supported=model_order_ok)
     energy_training = energy_metrics(train,candidate,signature['windows'])
     energy_validation = energy_metrics(points,candidate,after=split)
     energy_baseline = energy_metrics(points,baseline,after=split)
@@ -353,7 +414,7 @@ def fit_house(request):
         and validation_metrics[str(h)]["rmse_K"] <= max(.1, baseline_metrics[str(h)]["rmse_K"]*1.05)
         and validation_metrics[str(h)]["rmse_K"] <= max(.1, persistence[str(h)]["rmse_K"])
         for h in (6, 24))
-    _, _, states, innovations = filter_points(points, candidate, check, retain=True)
+    _, _, states, innovations = filter_points(points, candidate, check, retain=True,initial_offset=offset)
     if len(innovations) > 2:
         mean = sum(innovations)/len(innovations)
         denom = sum((v-mean)**2 for v in innovations)
@@ -363,22 +424,22 @@ def fit_house(request):
                               (validation_ok, "held_out_validation"), (energy_ok,"held_out_energy_validation")):
             if not passed:
                 report["bypassed_checks"].append(label)
-    report["validated"] = bool(best.success and identified and not at_bound and validation_ok and energy_ok)
-    report["accepted"] = bool(best.success and (force or report["validated"]))
+    report["validated"] = bool(best.success and identified and structural['supported'] and model_order_ok and not at_bound and validation_ok and energy_ok)
+    report["accepted"] = bool(best.success and structural['supported'] and not at_bound and (force or report["validated"]))
     if report["accepted"]:
         report.update(status="forced_provisional" if force else "accepted",
                       reason="Forced provisional fit; normal quality gates bypassed" if force else "Physical identification and held-out 6/24-hour forecasts passed",
                       parameters=candidate.to_dict())
         if timezone is not None:
-            engine = HouseEstimator(candidate, timezone)
-            for point in points:
-                check()
-                engine.step(point)
+            check()
+            engine,_=daily_states(points,candidate,timezone,offset)
             report["final_state"] = engine.snapshot()
         elif states[-1] is not None:
             report["final_state"] = {"timestamp": points[-1][0], "state": list(states[-1][0]), "covariance": list(states[-1][1])}
     else:
-        report["reason"] = ("Optimizer did not converge" if not best.success else
+        report["reason"] = ("Unsupported two-state structure; previous parameters retained" if not structural['supported'] else
+                            "Second-order model did not improve withheld forecasts" if not force and not model_order_ok else
+                            "Optimizer did not converge" if not best.success else
                             "Physical parameters poorly identifiable" if not identified else
                             "Physical parameter reached a bound" if at_bound else
                             "Held-out heating energy failed coverage or accuracy checks" if not energy_ok else

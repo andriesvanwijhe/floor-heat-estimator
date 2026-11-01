@@ -93,6 +93,7 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    await hass.data[DOMAIN][entry.entry_id].async_shutdown()
     await hass.data[DOMAIN][entry.entry_id].learning.async_shutdown()
     house = hass.data[DOMAIN][entry.entry_id].house
     if house:

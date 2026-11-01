@@ -26,7 +26,7 @@ def energy_windows(points):
     return windows
 
 
-def fit_signature(points, baseline):
+def fit_signature(points, baseline, gain_modes=None):
     """Fit Qh = H*(Ti-Ta) - A*G - I + Ceff*dTi/dt before dynamics.
 
     Ceff is a nuisance storage proxy, not a published physical capacity.
@@ -43,12 +43,14 @@ def fit_signature(points, baseline):
     y = np.array([w['heat_kW'] for w in windows])
     scales = np.linalg.norm(x,axis=0)
     scaled = x/np.maximum(scales,1e-12)
-    condition = float(np.linalg.cond(scaled))
+    columns=[0,1,2]+([3] if scales[3]>1e-8 else [])
+    condition = float(np.linalg.cond(scaled[:,columns]))
     independent_days = (points[-1][0]-points[0][0])/86400
     joint = len(windows) >= 12 and independent_days >= 5 and condition < 100
     capacity = baseline.ci+baseline.ce*baseline.rea/(baseline.rie+baseline.rea)
     prior = np.array([1/(baseline.rie+baseline.rea),baseline.solar_area,baseline.internal_gain,capacity])
-    if joint:
+    modes = gain_modes or {'solar_area':'free' if joint else 'fixed','internal_gain':'free' if joint else 'fixed'}
+    if joint or gain_modes is not None:
         indices = [0,1,2,3]
         lower,upper = [.005,.001,0,0], [50,500,5,2000]
     else:
@@ -56,10 +58,26 @@ def fit_signature(points, baseline):
         lower,upper = [.005,0], [50,2000]
         y = y-x[:,1]*prior[1]-x[:,2]*prior[2]
     design = x[:,indices]
+    if gain_modes is not None:
+        indices = [0]+[i for i,key in ((1,'solar_area'),(2,'internal_gain')) if modes[key]!='fixed']+[3]
+        y = np.array([w['heat_kW'] for w in windows])
+        for i,key in ((1,'solar_area'),(2,'internal_gain')):
+            if modes[key]=='fixed':
+                y -= x[:,i]*prior[i]
+        lower = np.array([.005,.001,0,0])[indices]
+        upper = np.array([50,500,5,2000])[indices]
+        design = x[:,indices]
     # Overlapping windows provide shape information, not independent days.
     weight = math.sqrt(min(1,independent_days/len(windows)))
     widths = np.array([.5,50,1,100])[indices]
     regularizer = np.diag(1/widths)*.1
+    if gain_modes is not None:
+        for i,key in ((1,'solar_area'),(2,'internal_gain')):
+            if i in indices and modes[key]=='prior':
+                j=indices.index(i)
+                regularizer[j,j] = .15/(max(2,baseline.solar_area*.5) if i==1 else .25)
+            elif i in indices and modes[key]=='free':
+                regularizer[indices.index(i),indices.index(i)]=0
     result = lsq_linear(np.vstack((weight*design,regularizer)),
                         np.concatenate((weight*y,regularizer@prior[indices])),bounds=(lower,upper))
     values = prior.copy()
@@ -75,7 +93,9 @@ def fit_signature(points, baseline):
         "storage_proxy_kWh_K": float(values[3]), "rmse_kW": rmse,
         "window_count": len(windows), "independent_days": independent_days,
         "design_condition": condition if math.isfinite(condition) else None,
-        "gains_fixed_to_configured_values": not joint,
+        "gains_fixed_to_configured_values": all(v=='fixed' for v in modes.values()),
+        "gain_modes": modes, "signature_identifiable": joint,
+        "parameter_status": {key:('fixed' if mode=='fixed' else 'prior_dominated' if mode=='prior' and not joint else 'learned_with_prior' if mode=='prior' else 'weakly_identified' if not joint else 'learned') for key,mode in modes.items()},
         "support_interpretation": "Engineering support band including storage-proxy model error; not a confidence interval",
         "windows": windows}
 
