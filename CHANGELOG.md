@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1
+
+- Fix underfloor startup replay getting permanently stuck on a transient unavailable input recorded during restart.
+- Bridge short interior input gaps only when valid readings on both sides have identical operating mode, room temperature differs by no more than 0.5 K, and active-heating power agrees within the larger of 50 W and 5%. The total boundary-to-boundary interval must not exceed the configured maximum gap.
+- Record every held-input estimation assumption in `initialization.estimated_gaps`. Never synthesize a measured water temperature, bridge an unknown tail, ignore contradictory known modes, or bridge long/changing-input gaps.
+- Expose the exact failed timestamp, model status and missing fields when initialization cannot complete. Refresh diagnostic entities after failure.
+- If Recorder import fails, still try retained local recordings; recovered history is not activated while current live inputs remain invalid.
+
 ## 0.4.0
 
 - Initialize the underfloor model from its last valid measured supply/return mean and replay historical heat input and room temperature to now, including cooldown. Run recovery in a cancellable background task; report incomplete history instead of assuming zero power or a cold floor.

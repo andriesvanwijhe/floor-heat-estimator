@@ -52,5 +52,29 @@ class ReplayTests(unittest.TestCase):
         self.assertFalse(structure.structure(house.HouseParameters(ci=10,ce=999,rie=5,rea=.375),72)['supported'])
         self.assertTrue(structure.structure(house.HouseParameters(ci=1,ce=8,rie=.4,rea=3.6),168)['supported'])
 
+    def test_short_startup_unavailable_rows_replay_with_declared_assumption(self):
+        samples=self.samples.copy()
+        samples[15]=model.Sample(samples[15].timestamp,None,None,None,None,None,None)
+        samples[16]=model.Sample(samples[16].timestamp,None,None,None,None,None,'unavailable')
+        replay,report=init.replay_floor(samples,self.settings,samples[-1].timestamp)
+        reference,_=init.replay_floor(self.samples,self.settings,samples[-1].timestamp)
+        self.assertEqual(report['status'],'replayed')
+        self.assertEqual(len(report['estimated_gaps']),1)
+        self.assertEqual(report['estimated_gaps'][0]['samples'],2)
+        self.assertAlmostEqual(replay.temperatures['nonlinear'],reference.temperatures['nonlinear'])
+
+    def test_startup_gap_cannot_bridge_changed_power_mode_room_or_long_gaps(self):
+        from dataclasses import replace
+        for kind in ('mode','room','long','tail','power'):
+            samples=self.samples.copy()
+            if kind=='power':samples=[replace(s,mode='hc',power=3,flow=0) if i>5 else s for i,s in enumerate(samples)]
+            samples[15]=model.Sample(samples[15].timestamp,None,None,None,None,None,None)
+            if kind=='mode':samples[16]=replace(samples[16],mode='dhw')
+            if kind=='room':samples[16]=replace(samples[16],room=22)
+            if kind=='power':samples[16]=replace(samples[16],power=5)
+            if kind=='long':samples=[replace(s,timestamp=s.timestamp+1800) if i>=16 else s for i,s in enumerate(samples)]
+            if kind=='tail':samples=samples[:16]
+            self.assertIsNone(init.replay_floor(samples,self.settings,samples[-1].timestamp)[0],kind)
+
 
 if __name__=='__main__':unittest.main()

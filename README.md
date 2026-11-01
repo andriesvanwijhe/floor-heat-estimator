@@ -432,3 +432,14 @@ Solar area and internal gain each have `fixed`, `prior`, and `free` choices. Def
 One integration now has **Underfloor** and **House** device pages, each with its own controls and diagnostics. Existing entity unique IDs remain unchanged; Home Assistant retains existing entity IDs and dashboard references. Configuration opens a menu for Underfloor or House; editing one preserves the other's settings. Floor source selection and floor model/learning remain sequential under Underfloor. The House page contains its own sources, model, learning and forecast settings.
 
 House learning-policy changes invalidate incompatible saved house calibration, without deleting recorded history or floor calibration. After updating/restarting, review priors and gain modes and run the appropriate house fit. The existing Import and apply provisional house fit button remains available. This release does not change your Codex model setting, install itself on Home Assistant, or implement dynamic hourly heat-pump scheduling.
+
+
+## Restart-gap recovery correction (v0.4.1)
+
+Version 0.4.0 rejected every missing required input during replay. A temporary startup `unavailable` record could therefore prevent every later retry from reaching now, even when live inputs had recovered.
+
+Replay now permits a bounded **held-input estimate** for an interior gap when both boundary samples are valid, their mode matches exactly, room temperatures differ by at most 0.5 K, and active-heating power differs by at most the larger of 0.05 kW and 5% of the preceding power. The entire boundary interval must be within the configured maximum gap. Known contradictory modes inside the gap prevent reconstruction. The model uses the preceding room/power values through that gap; these are assumptions, not measured data. In known non-heating mode the modeled heat input remains zero.
+
+Each such gap appears in `initialization.estimated_gaps` with timestamps, duration, sample count and assumption text. Supply/return/flow are cleared on estimated rows so they cannot become synthetic water-temperature observations. Original recordings and fitting data are unchanged. Missing tails, long gaps, changed mode/power or larger room changes still block recovery. Failure diagnostics include the first failed timestamp, missing input names and underlying model status.
+
+This repairs the initialization path; it does not guarantee that an arbitrary history gap can be reconstructed. After updating and restarting/reloading the integration, allow the background recovery to finish. It retries every five minutes if current inputs are still unavailable. No recalibration is required for this patch.

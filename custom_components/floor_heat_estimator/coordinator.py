@@ -141,8 +141,10 @@ class FloorCoordinator(DataUpdateCoordinator):
                 from .history_import import async_import_history
                 import_settings={**settings,'learning_days':min(settings['learning_days'],max(2,settings['maximum_prediction_hours']/24+1))}
                 await async_import_history(self.hass,directory,import_settings,timestamp,self.initialization_cancel)
-            except (ValueError,ImportError):
-                pass  # Existing local recordings remain useful without Recorder.
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                _LOGGER.warning('Recorder recovery import failed; trying retained local samples: %s',err)
             replay_now=max(timestamp,self.engine.previous.timestamp if self.engine.previous else timestamp)
             engine,report = await self.hass.async_add_executor_job(load_floor,directory,settings,replay_now)
             self.initialization_report = report
@@ -154,10 +156,16 @@ class FloorCoordinator(DataUpdateCoordinator):
                         self.initialization_report = {'status':'initialization_incomplete','reason':'New inputs arrived too late to bridge replay'}
                         return
                     engine.step(current)
+                    # Invalid live inputs must not replace a successful historical replay.
+                    if engine._input(current) is None or current.room is None:
+                        self.initialization_report={**report,'status':'initialization_incomplete','reason':'Current live inputs have not recovered yet'}
+                        return
                 self.engine = engine
                 self.initialization_complete=True
                 self.pending_restore = None
                 await self.async_request_refresh()
+            elif engine is None:
+                self.async_update_listeners()
         except asyncio.CancelledError:
             raise
         except Exception as err:
