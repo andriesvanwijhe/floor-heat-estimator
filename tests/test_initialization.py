@@ -74,12 +74,41 @@ class ReplayTests(unittest.TestCase):
             samples=self.samples.copy()
             if kind=='power':samples=[replace(s,mode='hc',power=3,flow=0) if i>5 else s for i,s in enumerate(samples)]
             samples[15]=model.Sample(samples[15].timestamp,None,None,None,None,None,None)
-            if kind=='mode':samples[16]=replace(samples[16],mode='dhw')
+            if kind=='mode':samples[16]=replace(samples[16],mode='hc',power=5)
             if kind=='room':samples[16]=replace(samples[16],room=22)
             if kind=='power':samples[16]=replace(samples[16],power=5)
             if kind=='long':samples=[replace(s,timestamp=s.timestamp+1800) if i>=16 else s for i,s in enumerate(samples)]
             if kind=='tail':samples=samples[:16]
             self.assertIsNone(init.replay_floor(samples,self.settings,samples[-1].timestamp)[0],kind)
+
+    def test_short_dhw_to_standby_gap_has_zero_floor_heat_and_recovers(self):
+        from dataclasses import replace
+        samples=[replace(s,mode='dhw') if 6<=i<17 else replace(s,mode='standby') if i>=17 else s
+                 for i,s in enumerate(self.samples)]
+        reference,_=init.replay_floor(samples,self.settings,samples[-1].timestamp)
+        for i in (15,16):samples[i]=replace(samples[i],room=None,power=0 if i==16 else None,mode=None)
+        engine,report=init.replay_floor(samples,self.settings,samples[-1].timestamp)
+        self.assertIsNotNone(engine,report)
+        self.assertEqual(report['estimated_gaps'][0]['boundary_modes'],['dhw','standby'])
+        self.assertIn('zero floor heat',report['estimated_gaps'][0]['assumption'])
+        self.assertAlmostEqual(engine.temperatures['nonlinear'],reference.temperatures['nonlinear'])
+
+    def test_non_heating_gap_still_rejects_recorded_heating_or_unknown_positive_power(self):
+        from dataclasses import replace
+        for mode,power in (('hc',3),(None,3)):
+            samples=self.samples.copy()
+            samples[15]=replace(samples[15],room=None,mode=mode,power=power)
+            engine,report=init.replay_floor(samples,self.settings,samples[-1].timestamp)
+            self.assertIsNone(engine)
+            self.assertIsNotNone(report['unbridged_gap']['reason'])
+
+    def test_heating_to_standby_missing_inputs_cannot_be_assumed_zero(self):
+        from dataclasses import replace
+        samples=self.samples.copy()
+        samples[5]=replace(samples[5],room=None,power=None,mode=None)
+        engine,report=init.replay_floor(samples,self.settings,samples[-1].timestamp)
+        self.assertIsNone(engine)
+        self.assertIn('heating and non-heating',report['unbridged_gap']['reason'])
 
 
 if __name__=='__main__':unittest.main()

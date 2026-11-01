@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- Recover bounded missing-input intervals between different known non-heating modes, such as domestic hot water and standby. Both have zero floor-circuit heat input under the heating-only model; their names need not match.
+- Preserve known modes inside those intervals, never invent water observations, and record boundary modes plus the zero-input/held-room assumption in diagnostics. Unknown positive thermal input, a known heating mode inside the gap, heating/non-heating boundary transitions, long gaps and changing room temperatures remain rejected.
+- Explain remaining initialization failures with the valid boundary states and the specific reason a gap cannot be bridged.
+- Keep all floor-fit validation checks unchanged. A rejected calibration does not itself disable a valid running floor state.
+
 ## 0.5.0
 
 - Preserve known heat/mode inputs at circulation transitions; invalidate water observations through the flow/settling gate instead. Version and refresh old Recorder imports.

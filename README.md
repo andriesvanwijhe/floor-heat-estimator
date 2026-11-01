@@ -410,3 +410,10 @@ Replay now permits a bounded **held-input estimate** for an interior gap when bo
 Each such gap appears in `initialization.estimated_gaps` with timestamps, duration, sample count and assumption text. Supply/return/flow are cleared on estimated rows so they cannot become synthetic water-temperature observations. Original recordings and fitting data are unchanged. Missing tails, long gaps, changed mode/power or larger room changes still block recovery. Failure diagnostics include the first failed timestamp, missing input names and underlying model status.
 
 This repairs the initialization path; it does not guarantee that an arbitrary history gap can be reconstructed. After updating and restarting/reloading the integration, allow the background recovery to finish. It retries every five minutes if current inputs are still unavailable. No recalibration is required for this patch.
+
+
+## Non-heating recovery gaps (v0.5.1)
+
+A short interruption can end in a different non-heating mode: for example, `dhw` before a restart and `standby` afterward. Since this heating-only integration assumes zero floor heat outside `hc` (or the configured heating mode), those boundaries are equivalent for floor cooldown. Recovery now allows a bounded hold-input estimate between them when room temperatures differ by no more than 0.5 K, the interval stays within the configured maximum gap, and no recorded heating contradicts that assumption. Known modes are retained; missing water measurements are never synthesized. A positive thermal-power reading above 50 W with unknown mode prevents this non-heating estimate.
+
+`initialization.estimated_gaps` lists the boundary modes and the zero-input/held-room assumption. Remaining failures include `initialization.unbridged_gap` with boundary timestamps, temperatures, modes and the rejection reason. Genuine heating/non-heating transitions and long or unbounded gaps still require usable history or a fresh valid measurement. Fit rejection and missing runtime initialization are separate statuses; validation criteria are unchanged.
