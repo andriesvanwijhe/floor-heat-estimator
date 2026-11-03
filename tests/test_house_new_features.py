@@ -133,8 +133,10 @@ class ForcedFitTests(unittest.TestCase):
         request={'points':points,'baseline':bad_prior.to_dict(),'energy_prior':parameters.to_dict(),'starts':1,'max_seconds':30}
         self.assertEqual(fitting.fit_house(request)['status'],'insufficient_data')
         def optimizer(fn, values, **kwargs):
-            return SimpleNamespace(x=values,fun=fn(values),success=True,message='test converged')
-        with patch('scipy.optimize.minimize',optimizer):
+            import numpy as np
+            residual=np.asarray(fn(values))
+            return SimpleNamespace(x=values,fun=residual,cost=float(.5*np.sum(residual**2)),success=True,message='test converged')
+        with patch('scipy.optimize.least_squares',optimizer):
             result=fitting.fit_house({**request,'force':True,'correction_timezone':'Europe/Amsterdam'})
         self.assertTrue(result['accepted'],result)
         self.assertTrue(result['provisional'])

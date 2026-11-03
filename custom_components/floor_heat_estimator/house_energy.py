@@ -86,9 +86,21 @@ def fit_signature(points, baseline, gain_modes=None):
     rmse = float(np.sqrt(np.mean(residual**2)))
     # Broad support for approximation/seasonal drift; never call this a CI.
     delta = max(.25*values[0], 2*max(.1,rmse)/max(float(np.sqrt(np.mean(x[:,0]**2))),1))
+    # A residual/RMS-temperature band alone ignores coupling between H, solar
+    # area, internal gains and the storage proxy. Propagate regression-design
+    # sensitivity with effective record duration, not overlapping-window count.
+    # This is a conservative engineering support allowance, NOT a confidence
+    # interval (the proxy and errors are approximate/correlated).
+    varying = np.linalg.norm(design, axis=0) > 1e-10
+    supported_design = weight*design[:, varying]
+    sensitivity = np.linalg.pinv(supported_design.T@supported_design)
+    regression_allowance = (2*max(.1,rmse)*math.sqrt(max(0,float(sensitivity[0,0])))
+                            if varying[0] else 50.0)
+    delta = max(delta, regression_allowance)
     support = [max(.005,float(values[0]-delta)),min(50,float(values[0]+delta))]
     return {"status": "joint_signature" if joint else "conditional_signature",
         "heat_loss_kW_K": float(values[0]), "heat_loss_support_kW_K": support,
+        "heat_loss_regression_allowance_kW_K": regression_allowance,
         "solar_area_m2": float(values[1]), "internal_gain_kW": float(values[2]),
         "storage_proxy_kWh_K": float(values[3]), "rmse_kW": rmse,
         "window_count": len(windows), "independent_days": independent_days,

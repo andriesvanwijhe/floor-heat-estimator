@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+- Replace house innovations-likelihood training with continuous simulation: no room-measurement, heating-restart or midnight corrections inside the fitting trajectory. Preserve live midnight corrections and configured heat input.
+- Combine absolute temperature errors, fixed 30/60/180-minute temperature-change errors and daily energy-balance errors, with fixed chronological data selection and calendar-day weights. Add held-out continuous/change metrics and amplitude ratios.
+- Anchor Rie + Rea to the energy signature while fitting their split and both heat capacities. Account for regression-design coupling in the engineering heat-loss support band. Replace hard solar/internal gain support limits with soft priors; fixed/free modes remain supported.
+- Profile regularized initial envelope temperature independently per genuine continuous segment using analytic least squares. Missing room observations do not reset propagation; missing drivers still split history. Initial states never use future validation targets.
+- Keep noise scales fixed during physical fitting. Report local sensitivity and all failed acceptance checks, without deriving false statistical confidence intervals from correlated composite residuals. Existing calibration is retained until a replacement passes.
+- Give the first-order validation comparator the same room-correction policy as the house twin. Add synthetic physical-recovery, cycle-amplitude, exact propagation, data-gap and holdout-isolation regression coverage.
+
 ## 0.5.1
 
 - Recover bounded missing-input intervals between different known non-heating modes, such as domestic hot water and standby. Both have zero floor-circuit heat input under the heating-only model; their names need not match.

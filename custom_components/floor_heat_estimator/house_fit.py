@@ -1,4 +1,4 @@
-"""Isolated, bounded maximum-likelihood identification of the Fig. 1 model.
+"""Isolated, energy-anchored continuous identification of the Fig. 1 model.
 
 This file also runs as a worker script. It never imports Home Assistant.
 Only a JSON request is read from stdin and a JSON report written to stdout.
@@ -9,10 +9,12 @@ import time
 from datetime import UTC, datetime
 
 if __package__:
+    from .house_simulation import SimulationData, CHANGE_SCALES, TEMPERATURE_SCALE, ENERGY_SCALE
     from .house_structure import structure, first_order_errors
     from .house_energy import constrain, energy_metrics, fit_signature
     from .house_model import HouseEstimator, HouseParameters, advance, correct, initial_state, predict_covariance, transition
 else:
+    from house_simulation import SimulationData, CHANGE_SCALES, TEMPERATURE_SCALE, ENERGY_SCALE
     from house_structure import structure, first_order_errors
     from house_energy import constrain, energy_metrics, fit_signature
     from house_model import HouseEstimator, HouseParameters, advance, correct, initial_state, predict_covariance, transition
@@ -124,9 +126,10 @@ def forecast_errors(points, parameters, split_time, check=lambda: None, timezone
     Every hourly origin uses only the filter state available at that origin.
     Each horizon is independently simulated without any measurement updates.
     """
-    _, _, states, _ = filter_points(points, parameters, check, retain=True,initial_offset=initial_offset)
     if timezone is not None:
         _,states=daily_states(points,parameters,timezone,initial_offset)
+    else:
+        _, _, states, _ = filter_points(points, parameters, check, retain=True,initial_offset=initial_offset)
     coefficients = transition(parameters, 1/12)
     errors = {1: [], 6: [], 24: []}
     persistence = {1: [], 6: [], 24: []}
@@ -154,7 +157,7 @@ def forecast_errors(points, parameters, split_time, check=lambda: None, timezone
 
 def fit_house(request):
     import numpy as np
-    from scipy.optimize import minimize
+    from scipy.optimize import least_squares
 
     began = time.monotonic()
     budget = request.get("max_seconds", 900)
@@ -162,6 +165,8 @@ def fit_house(request):
     def check():
         if time.monotonic()-began > budget:
             raise FitDeadline("House fit exceeded the configured time limit")
+
+    check()
 
     points = request["points"]
     force = request.get("force", False)
@@ -198,9 +203,6 @@ def fit_house(request):
         report["bypassed_checks"].append("training_and_validation_coverage")
     if not train_measured:
         return report
-    if force and filter_points(train, HouseParameters(**request["baseline"]))[1] < 24:
-        report["reason"] = "Need 24 measured training points after continuous six-hour filter warm-up"
-        return report
     ranges = {name: max(row[index] for row in train if row[index] is not None)
               -min(row[index] for row in train if row[index] is not None)
               for name, index in (("room_K", 1), ("outdoor_K", 2), ("heat_kW", 3), ("solar_kW_per_m2", 4))}
@@ -214,237 +216,225 @@ def fit_house(request):
         report["bypassed_checks"].append("input_excitation")
 
     baseline = HouseParameters(**request["baseline"])
-    energy_prior = HouseParameters(**request.get("energy_prior",request["baseline"]))
-    dynamics_prior=HouseParameters(**request.get('dynamics_prior',energy_prior.to_dict()))
-    gain_modes=request.get('gain_modes')
-    signature = fit_signature(train,energy_prior,gain_modes)
+    energy_prior = HouseParameters(**request.get("energy_prior", request["baseline"]))
+    dynamics_prior = HouseParameters(**request.get("dynamics_prior", energy_prior.to_dict()))
+    gain_modes = request.get("gain_modes")
+    signature = fit_signature(train, energy_prior, gain_modes)
     report["energy_signature"] = signature
+    report.update(fitting_method="continuous_simulation_v1",
+        simulation_policy="No measurement or midnight corrections; seed only at genuine driving-input gaps",
+        objective_scales={"temperature_K": TEMPERATURE_SCALE,
+            "temperature_change_K": {str(k*5): v for k, v in CHANGE_SCALES.items()},
+            "daily_mean_heat_kW": ENERGY_SCALE},
+        selection_policy="Fixed chronological split, availability mask, segments, lags and calendar-day weights",
+        noise_policy="Retain configured/active noise scales; noise is not optimized against simulation error")
     if "heat_loss_support_kW_K" not in signature:
-        report.update(status="insufficient_data",reason=signature["reason"])
+        report.update(status="insufficient_data", reason=signature["reason"])
         return report
     if signature['gains_fixed_to_configured_values'] and not force:
-        report.update(status="poor_energy_identification",reason="Energy signature cannot separate gains and heat loss; collect more varied days or use the provisional override")
+        report.update(status="poor_energy_identification", reason="Energy signature cannot separate gains and heat loss; collect more varied days or use the provisional override")
         return report
 
-    lower = np.array([bound[0] if i == GAIN_INDEX else math.log(bound[0]) for i, bound in enumerate(BOUNDS)])
-    upper = np.array([bound[1] if i == GAIN_INDEX else math.log(bound[1]) for i, bound in enumerate(BOUNDS)])
-    # Optimize heat loss directly rather than clipping two independently
-    # optimized resistances: clipping creates flat, misleading optima.
-    lower[2],upper[2] = map(math.log,signature['heat_loss_support_kW_K'])
-    h_min,h_max = signature['heat_loss_support_kW_K']
-    fraction_min = max(.01*h_max,1-100*h_min,1e-6)
-    fraction_max = min(1-.01*h_max,100*h_min,1-1e-6)
-    if fraction_min >= fraction_max:
-        report.update(status="rejected",reason="Energy signature reached the physical resistance limits")
-        return report
-    lower[3],upper[3] = math.log(fraction_min/(1-fraction_min)),math.log(fraction_max/(1-fraction_max))
+    # Six physical coordinates: log Ci, log Ce, log H, log Rie/Rea,
+    # log solar area, internal gain (kW). No optimized process-noise escape.
+    lower = np.array([b[0] if i == GAIN_INDEX else math.log(b[0]) for i,b in enumerate(BOUNDS[:PHYSICAL_COUNT])])
+    upper = np.array([b[1] if i == GAIN_INDEX else math.log(b[1]) for i,b in enumerate(BOUNDS[:PHYSICAL_COUNT])])
+    lower[2], upper[2] = map(math.log, signature['heat_loss_support_kW_K'])
+    h_min, h_max = signature['heat_loss_support_kW_K']
+    # Independent rectangular bounds cannot enforce both resistor limits over
+    # an uncertain H range (H=.005 allows only Rie=Rea=100). Keep a supported
+    # fractional range and penalize individual physical-limit violations.
+    fraction_min, fraction_max = .02, .98
+    lower[3], upper[3] = math.log(fraction_min/(1-fraction_min)), math.log(fraction_max/(1-fraction_max))
     fixed_gains = signature['gains_fixed_to_configured_values']
-    if not fixed_gains:
-        lower[4] = math.log(max(.001,signature['solar_area_m2']*.5))
-        upper[4] = math.log(min(500,signature['solar_area_m2']*1.5))
-        lower[5],upper[5] = max(0,signature['internal_gain_kW']-.5),min(5,signature['internal_gain_kW']+.5)
-    for i,key in ((4,'solar_area'),(5,'internal_gain')):
-        if gain_modes and gain_modes[key]=='free':
-            lower[i],upper[i]=(math.log(BOUNDS[i][0]),math.log(BOUNDS[i][1])) if i==4 else BOUNDS[i]
+    modes = signature['gain_modes']
+    active = [i for i, key in enumerate(PARAMETERS[:PHYSICAL_COUNT]) if modes.get(key) != 'fixed']
 
     def anchored(values):
-        raw = unpack(values)
-        h,ratio = math.exp(values[2]),math.exp(values[3])
-        data = raw.to_dict()
-        data.update(rie=ratio/(h*(1+ratio)),rea=1/(h*(1+ratio)))
-        for key in ('solar_area','internal_gain'):
-            if signature['gain_modes'][key]=='fixed':
-                data[key]=getattr(energy_prior,key)
+        h, ratio = math.exp(values[2]), math.exp(values[3])
+        data = baseline.to_dict()
+        data.update(ci=math.exp(values[0]), ce=math.exp(values[1]),
+            rie=ratio/(h*(1+ratio)), rea=1/(h*(1+ratio)),
+            solar_area=math.exp(values[4]), internal_gain=float(values[5]))
+        for key in ('solar_area', 'internal_gain'):
+            if modes[key] == 'fixed':
+                data[key] = getattr(energy_prior, key)
         return HouseParameters(**data)
 
-    seed = constrain(energy_prior,signature)
-    initial = np.array(pack(seed))
-    initial[2:4] = math.log(1/(seed.rie+seed.rea)),math.log(seed.rie/seed.rea)
-    initial = np.clip(initial,lower+1e-6,upper-1e-6)
-    # Estimate a shared segment-initial Te offset as a nuisance variable;
-    # physical parameters must not compensate for a fixed equilibrium guess.
-    lower,upper=np.append(lower,-15),np.append(upper,15)
-    initial=np.append(initial,0)
+    seed = constrain(energy_prior, signature)
+    initial = np.array(pack(seed)[:PHYSICAL_COUNT])
+    initial[2:4] = math.log(1/(seed.rie+seed.rea)), math.log(seed.rie/seed.rea)
+    initial = np.clip(initial, lower+1e-6, upper-1e-6)
+    dataset = SimulationData(train, check)
+    if len(dataset.targets) < 24:
+        report.update(reason="Need 24 measured training targets after segment initialization")
+        return report
+    h_centre = signature['heat_loss_kW_K']
+    h_width = max(.05, math.log(h_max/h_centre), math.log(h_centre/h_min))
 
-    def objective(values):
+    def evaluate(values):
         check()
-        try:
-            candidate = anchored(values)
-            likelihood = filter_points(train,candidate,check,initial_offset=values[-1])[0]
-            metrics = energy_metrics(train,candidate,signature['windows'])
-            # Daily-energy residual cannot be hidden by fitted process noise.
-            error = metrics.get('rmse_mean_load_kW',1e6)
-            penalty=0.0
-            for key in ('solar_area','internal_gain'):
-                if gain_modes and gain_modes[key]=='prior':
-                    width=max(2,energy_prior.solar_area*.5) if key=='solar_area' else .25
-                    penalty+=((getattr(candidate,key)-getattr(energy_prior,key))/width)**2
-            penalty+=request.get('ratio_prior_strength',0)*math.log((candidate.rie/candidate.rea)/(dynamics_prior.rie/dynamics_prior.rea))**2
-            penalty+=request.get('capacity_prior_strength',0)*sum(math.log(getattr(candidate,k)/getattr(dynamics_prior,k))**2 for k in ('ci','ce'))
-            return likelihood+.5*signature['independent_days']*(error/.15)**2+.5*penalty
-        except (ValueError, OverflowError, ZeroDivisionError):
-            return 1e30
+        candidate = anchored(values)
+        result = dataset.evaluate(candidate, profile=True)
+        penalties = [math.log((1/(candidate.rie+candidate.rea))/h_centre)/h_width]
+        for resistance in (candidate.rie,candidate.rea):
+            penalties.extend((100*max(0,math.log(.01/resistance)),
+                              100*max(0,math.log(resistance/100))))
+        for key in ('solar_area', 'internal_gain'):
+            if modes[key] == 'prior':
+                width = max(2, energy_prior.solar_area*.5) if key == 'solar_area' else .25
+                penalties.append((getattr(candidate,key)-getattr(energy_prior,key))/width)
+        penalties.append(math.sqrt(request.get('ratio_prior_strength',0))*math.log(
+            (candidate.rie/candidate.rea)/(dynamics_prior.rie/dynamics_prior.rea)))
+        for key in ('ci','ce'):
+            penalties.append(math.sqrt(request.get('capacity_prior_strength',0))*math.log(
+                getattr(candidate,key)/getattr(dynamics_prior,key)))
+        result['all_residual'] = np.concatenate((result['residual'], penalties))
+        return candidate, result
 
+    # Every start sees exactly the same observations and smooth residuals.
     fits = []
-    offsets = ([0]*len(PARAMETERS), [-.5, .5, -.5, .4, .3, .2, 0, 0, 0],
-               [.5, -.3, .4, -.4, -.3, -.2, 0, 0, 0])
-    for offset in offsets[:request.get("starts", 3)]:
-        start = np.clip(initial+[*offset,0], lower+1e-6, upper-1e-6)
-        # First identify physical dynamics with fixed small noise scales.
-        # Free process noise from the first iteration can absorb a poor initial
-        # RC model and trap optimisation at an unphysical, high-noise optimum.
-        def physical_objective(values):
-            return objective(np.concatenate((values, start[PHYSICAL_COUNT:])))
-        warm = minimize(physical_objective, start[:PHYSICAL_COUNT], method="L-BFGS-B",
-                        bounds=list(zip(lower[:PHYSICAL_COUNT], upper[:PHYSICAL_COUNT])),
-                        options={"maxiter": request.get("max_iterations", 160), "ftol": 1e-9, "maxls": 30})
-        if np.isfinite(warm.fun):
-            start[:PHYSICAL_COUNT] = warm.x
-        result = minimize(objective, start, method="L-BFGS-B", bounds=list(zip(lower, upper)),
-                          options={"maxiter": request.get("max_iterations", 160), "ftol": 1e-9, "maxls": 30})
-        if np.isfinite(result.fun) and result.fun < 1e29:
+    offsets = ([0]*6, [-.7,.5,-.1,.5,.4,.1], [.5,-.5,.1,-.5,-.4,-.1])
+    for offset in offsets[:request.get("starts",3)]:
+        start = np.clip(initial+offset, lower+1e-6, upper-1e-6)
+        def expand(values):
+            full = start.copy()
+            full[active] = values
+            return full
+        result = least_squares(lambda values: evaluate(expand(values))[1]['all_residual'], start[active],
+            bounds=(lower[active],upper[active]),x_scale='jac',
+            max_nfev=request.get("max_iterations",160),ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        result.x = expand(result.x)
+        result.fun = float(result.cost)
+        if math.isfinite(result.fun) and result.fun < 1e29:
             fits.append(result)
     if not fits:
-        report.update(status="rejected", reason="No finite likelihood solution")
+        report.update(status="rejected",reason="No finite continuous-simulation solution")
         return report
-    best = min(fits, key=lambda result: result.fun)
-    candidate = anchored(best.x)
-    structural=structure(candidate,(train[-1][0]-train[0][0])/3600)
-    report['candidate_structure']=structural
-    restricted=False
-    if force and not structural['supported']:
-        from dataclasses import replace
-        h=1/(candidate.rie+candidate.rea)
-        fraction=dynamics_prior.rie/(dynamics_prior.rie+dynamics_prior.rea)
-        candidate=replace(candidate,ci=dynamics_prior.ci,ce=dynamics_prior.ce,
-                          rie=fraction/h,rea=(1-fraction)/h)
-        restricted=True
-        structural=structure(candidate,(train[-1][0]-train[0][0])/3600)
-    report.update(active_structure=structural,dynamics_prior_dominated=restricted)
-    report.update(status="rejected", optimizer_converged=bool(best.success),
-                  optimizer_message=str(best.message), combined_objective=float(best.fun),
-                  negative_log_likelihood=filter_points(train,candidate,check,initial_offset=best.x[-1])[0],
-                  initial_hidden_offset_K=float(best.x[-1]),
-                  candidate_parameters=candidate.to_dict())
+    # A converged result takes priority; no validation data selects the start.
+    best = min([v for v in fits if v.success] or fits,key=lambda v:v.fun)
+    candidate, training_result = evaluate(best.x)
+    report.update(status="rejected",optimizer_converged=bool(best.success),
+        optimizer_message=str(best.message),combined_objective=float(best.fun),
+        optimizer_starts=[{"converged":bool(v.success),"cost":float(v.fun)} for v in fits],
+        candidate_parameters=candidate.to_dict(),
+        initial_hidden_offsets_K=[{"start_utc":datetime.fromtimestamp(t,UTC).isoformat(),"offset_K":v}
+            for t,v in training_result['offsets'].items()],
+        training_simulation=dataset.metrics(training_result),
+        resistance_anchor={"overall_heat_loss_kW_K":1/(candidate.rie+candidate.rea),
+            "total_resistance_K_kW":candidate.rie+candidate.rea,
+            "interior_fraction":candidate.rie/(candidate.rie+candidate.rea),
+            "interpretation":"Energy signature constrains Rie + Rea; dynamics identifies their split"})
+    structural = structure(candidate,(train[-1][0]-train[0][0])/3600)
+    report['candidate_structure'] = structural
 
-    # Observed-information Hessian in optimizer coordinates, including nuisance noise
-    # parameters. Marginalize noise with a Schur complement before evaluating
-    # physical identifiability. Never report L-BFGS's approximate inverse as CI.
-    hessian = observed_information(objective, best.x)
-    n = PHYSICAL_COUNT
-    physical = hessian[:n, :n]-hessian[:n, n:]@np.linalg.pinv(hessian[n:, n:])@hessian[n:, :n]
-    physical = (physical+physical.T)/2
-    active_indices=[i for i,key in enumerate(PARAMETERS[:n]) if key not in signature['gain_modes'] or signature['gain_modes'][key]!='fixed']
-    reduced=physical[np.ix_(active_indices,active_indices)]
-    eigenvalues = np.linalg.eigvalsh(reduced)
+    # Local residual sensitivity diagnoses rank/conditioning. Overlapping change
+    # pairs and engineering weights are NOT independent statistical observations.
+    # Do not turn this curvature into purported 95% parameter confidence intervals.
+    jacobian = []
+    for i in active:
+        step = 1e-4
+        plus, minus = best.x.copy(),best.x.copy()
+        plus[i] = min(upper[i],plus[i]+step)
+        minus[i] = max(lower[i],minus[i]-step)
+        denominator = plus[i]-minus[i]
+        jacobian.append((evaluate(plus)[1]['data_residual']-evaluate(minus)[1]['data_residual'])/denominator)
+    jacobian = np.array(jacobian).T
+    norms = np.linalg.norm(jacobian,axis=0)
+    singular = np.linalg.svd(jacobian/np.maximum(norms,1e-12),compute_uv=False)
+    condition = float(singular[0]/singular[-1]) if len(singular) and singular[-1]>1e-12 else None
     support_fraction = (best.x[2]-lower[2])/(upper[2]-lower[2])
     support_bound = support_fraction < .01 or support_fraction > .99
-    report['at_energy_support_bound'] = bool(support_bound)
-    enough_signature=signature['signature_identifiable'] or (fixed_gains and signature['window_count']>=12 and signature['independent_days']>=5)
-    identified = bool(not restricted and enough_signature and not support_bound and eigenvalues[0] > 1e-6 and eigenvalues[-1]/eigenvalues[0] < 1e7)
-    intervals = {}
-    condition = float(eigenvalues[-1]/eigenvalues[0]) if eigenvalues[0] > 0 else None
-    if identified:
-        covariance = np.zeros((n,n))
-        covariance[np.ix_(active_indices,active_indices)]=np.linalg.inv(reduced)
-        # Transform log(H), log(Rie/Rea) curvature into log-resistance
-        # coordinates before publishing physical resistance intervals.
-        jacobian = np.eye(n)
-        fraction = candidate.rie/(candidate.rie+candidate.rea)
-        jacobian[2,2],jacobian[2,3] = -1,1-fraction
-        jacobian[3,2],jacobian[3,3] = -1,-fraction
-        covariance = jacobian@covariance@jacobian.T
-        deviations = np.sqrt(np.maximum(np.diag(covariance), 0))
-        identified = bool(np.max(deviations[:GAIN_INDEX]) < 1.1
-                          and deviations[GAIN_INDEX] <= max(.1, 2*candidate.internal_gain))
-        for i, key in enumerate(PARAMETERS[:PHYSICAL_COUNT]):
-            if signature['gain_modes'].get(key)=='fixed':continue
-            uncertainty = min(float(deviations[i])*1.96, 30)
-            value = getattr(candidate, key)
-            if key == "internal_gain":
-                intervals[key] = {"lower_95": max(0, value-uncertainty), "upper_95": value+uncertainty,
-                                  "standard_error_kW": float(deviations[i]), "lower_bound": 0}
-            else:
-                intervals[key] = {"lower_95": value*math.exp(-uncertainty), "upper_95": value*math.exp(uncertainty),
-                                  "log_standard_error": float(deviations[i])}
-    report.update(identifiable=identified, information_condition=condition,
-                  approximate_confidence_intervals=intervals)
-    if force and not identified and not restricted:
+    enough_signature = signature['signature_identifiable'] or (fixed_gains and signature['window_count']>=12 and signature['independent_days']>=5)
+    identified = bool(enough_signature and not support_bound and condition is not None
+                      and condition<1e5 and np.all(norms>1e-4))
+    report.update(identifiable=identified,information_condition=condition,
+        at_energy_support_bound=bool(support_bound),approximate_confidence_intervals={},
+        confidence_interval_interpretation="Not reported: correlated simulation residuals and engineering weights do not define statistical confidence intervals",
+        sensitivity_coordinates=[PARAMETERS[i] if i not in (2,3) else {2:'overall_heat_loss',3:'resistance_ratio'}[i] for i in active])
+    restricted = False
+    if force and (not structural['supported'] or not identified):
         from dataclasses import replace
-        h=1/(candidate.rie+candidate.rea)
-        fraction=dynamics_prior.rie/(dynamics_prior.rie+dynamics_prior.rea)
-        candidate=replace(candidate,ci=dynamics_prior.ci,ce=dynamics_prior.ce,
-                          rie=fraction/h,rea=(1-fraction)/h)
-        restricted=True
-        structural=structure(candidate,(train[-1][0]-train[0][0])/3600)
-        report.update(candidate_parameters=candidate.to_dict(),active_structure=structural,
-                      dynamics_prior_dominated=True,approximate_confidence_intervals={})
-    signature['dynamics_prior_dominated']=restricted
-    # Zero internal gains are physically admissible; only its upper bound is
-    # screened. The other physical coefficients remain strictly interior.
-    physical_values = np.array(pack(candidate))
-    physical_lower = np.array([b[0] if i==GAIN_INDEX else math.log(b[0]) for i,b in enumerate(BOUNDS)])
-    physical_upper = np.array([b[1] if i==GAIN_INDEX else math.log(b[1]) for i,b in enumerate(BOUNDS)])
-    at_bound = bool(np.any((physical_values[:GAIN_INDEX]-physical_lower[:GAIN_INDEX])/(physical_upper[:GAIN_INDEX]-physical_lower[:GAIN_INDEX]) < .01)
-                    or np.any((physical_upper[:n]-physical_values[:n])/(physical_upper[:n]-physical_lower[:n]) < .01))
-    timezone = request.get("correction_timezone")
-    offset=0 if restricted else float(best.x[-1])
-    validation_metrics, persistence = forecast_errors(points, candidate, split, check, timezone,offset)
-    baseline_metrics, _ = forecast_errors(points, baseline, split, check, timezone)
-    report.update(validation=validation_metrics, baseline_validation=baseline_metrics,
-                  persistence_validation=persistence, at_physical_bound=at_bound)
-    first_order=first_order_errors(points,split,check)
-    model_order_ok=bool(first_order and all(validation_metrics.get(str(h),{}).get('rmse_K',1e9)<first_order.get(str(h),{}).get('rmse_K',0)*.95 for h in (6,24)))
+        h = 1/(candidate.rie+candidate.rea)
+        fraction = dynamics_prior.rie/(dynamics_prior.rie+dynamics_prior.rea)
+        candidate = replace(candidate,ci=dynamics_prior.ci,ce=dynamics_prior.ce,
+            rie=fraction/h,rea=(1-fraction)/h)
+        restricted = True
+        structural = structure(candidate,(train[-1][0]-train[0][0])/3600)
+        training_result = dataset.evaluate(candidate,profile=True)
+    report.update(active_structure=structural,dynamics_prior_dominated=restricted,
+                  candidate_parameters=candidate.to_dict())
+    signature['dynamics_prior_dominated'] = restricted
+    report['training_simulation'] = dataset.metrics(training_result)
+    initial_ok = all(abs(v)<15 for v in training_result['offsets'].values())
+    report['initial_state_supported'] = initial_ok
+    physical_values = np.array(pack(candidate)[:PHYSICAL_COUNT])
+    physical_lower = np.array([b[0] if i==GAIN_INDEX else math.log(b[0]) for i,b in enumerate(BOUNDS[:PHYSICAL_COUNT])])
+    physical_upper = np.array([b[1] if i==GAIN_INDEX else math.log(b[1]) for i,b in enumerate(BOUNDS[:PHYSICAL_COUNT])])
+    at_bound = bool(np.any((physical_values[:GAIN_INDEX]-physical_lower[:GAIN_INDEX])/(physical_upper[:GAIN_INDEX]-physical_lower[:GAIN_INDEX])<.01)
+        or np.any((physical_upper-physical_values)/(physical_upper-physical_lower)<.01))
+    timezone = request.get('correction_timezone')
+    validation_metrics,persistence = forecast_errors(points,candidate,split,check,timezone)
+    baseline_metrics,_ = forecast_errors(points,baseline,split,check,timezone)
+    report.update(validation=validation_metrics,baseline_validation=baseline_metrics,
+                  persistence_validation=persistence,at_physical_bound=at_bound)
+    first_order = first_order_errors(points,split,check,timezone, candidate.sigma_i, candidate.sigma_y)
+    model_order_ok = bool(first_order and all(validation_metrics.get(str(h),{}).get('rmse_K',1e9)<first_order.get(str(h),{}).get('rmse_K',0)*.95 for h in (6,24)))
     report.update(first_order_validation=first_order,second_order_supported=model_order_ok)
-    energy_training = energy_metrics(train,candidate,signature['windows'])
-    energy_validation = energy_metrics(points,candidate,after=split)
-    energy_baseline = energy_metrics(points,baseline,after=split)
-    energy_count = energy_validation['count']
-    energy_ok = bool(energy_count and
-        energy_validation['rmse_mean_load_kW'] <= max(.15,.25*energy_validation['mean_measured_load_kW']) and
-        energy_validation['rmse_mean_load_kW'] <= max(.15,1.05*energy_baseline.get('rmse_mean_load_kW',0)))
+
+    # Freeze initial-state estimates learned ONLY on training data. At subsequent
+    # genuine validation gaps use a room seed and equilibrium Te (zero offset).
+    all_data = SimulationData(points,check)
+    full_result = all_data.evaluate(candidate,offsets=training_result['offsets'])
+    baseline_offsets = dataset.evaluate(baseline,profile=True)['offsets']
+    baseline_result = all_data.evaluate(baseline,offsets=baseline_offsets)
+    report.update(validation_simulation=all_data.metrics(full_result,after=split),
+                  baseline_validation_simulation=all_data.metrics(baseline_result,after=split))
+    energy_training = dataset.energy_metrics(training_result)
+    energy_validation = all_data.energy_metrics(full_result,after=split)
+    energy_baseline = all_data.energy_metrics(baseline_result,after=split)
+    energy_ok = bool(energy_validation['count'] and
+        energy_validation['rmse_mean_load_kW']<=max(.15,.25*energy_validation['mean_measured_load_kW']) and
+        energy_validation['rmse_mean_load_kW']<=max(.15,1.05*energy_baseline.get('rmse_mean_load_kW',0)))
     report.update(energy_training=energy_training,energy_validation=energy_validation,
-                  baseline_energy_validation=energy_baseline,energy_validated=energy_ok,
-                  energy_anchor_enforced=True,
-                  confidence_interval_interpretation="Local curvature conditional on energy-signature support; excludes support-band uncertainty")
-    enough = all(validation_metrics.get(str(h), {}).get("count", 0) >= 4 for h in (1, 6, 24))
-    ceiling = request.get("maximum_rmse", 1.0)
-    validation_ok = enough and all(
-        validation_metrics[str(h)]["rmse_K"] <= ceiling
-        and validation_metrics[str(h)]["rmse_K"] <= max(.1, baseline_metrics[str(h)]["rmse_K"]*1.05)
-        and validation_metrics[str(h)]["rmse_K"] <= max(.1, persistence[str(h)]["rmse_K"])
-        for h in (6, 24))
-    _, _, states, innovations = filter_points(points, candidate, check, retain=True,initial_offset=offset)
-    if len(innovations) > 2:
-        mean = sum(innovations)/len(innovations)
-        denom = sum((v-mean)**2 for v in innovations)
-        report["standardized_innovation_lag1"] = (sum((a-mean)*(b-mean) for a, b in zip(innovations, innovations[1:]))/denom if denom else 0)
+        baseline_energy_validation=energy_baseline,energy_validated=energy_ok,energy_anchor_enforced=True)
+    enough = all(validation_metrics.get(str(h),{}).get('count',0)>=4 for h in (1,6,24))
+    ceiling = request.get('maximum_rmse',1.0)
+    validation_ok = enough and all(validation_metrics[str(h)]['rmse_K']<=ceiling
+        and validation_metrics[str(h)]['rmse_K']<=max(.1,baseline_metrics[str(h)]['rmse_K']*1.05)
+        and validation_metrics[str(h)]['rmse_K']<=max(.1,persistence[str(h)]['rmse_K']) for h in (6,24))
+    new_metrics, old_metrics = report['validation_simulation'],report['baseline_validation_simulation']
+    simulation_ok = bool(new_metrics['count']>=24 and new_metrics['rmse_K']<=ceiling
+        and new_metrics['rmse_K']<=max(.1,old_metrics['rmse_K']*1.05))
+    change_ok = all(new_metrics['changes'][str(lag*5)]['count']>=24 and
+        new_metrics['changes'][str(lag*5)]['rmse_K']<=max(.05,1.05*old_metrics['changes'][str(lag*5)]['rmse_K'])
+        for lag in CHANGE_SCALES)
+    report.update(simulation_validated=simulation_ok,temperature_changes_validated=change_ok)
+    checks = ((identified,'identifiability'),(not at_bound,'physical_bound_screen'),
+        (initial_ok,'initial_state_support'),(validation_ok,'held_out_validation'),
+        (energy_ok,'held_out_energy_validation'),(simulation_ok,'held_out_continuous_simulation'),
+        (change_ok,'held_out_temperature_changes'),(model_order_ok,'second_order_improvement'))
     if force:
-        for passed, label in ((identified, "identifiability"), (not at_bound, "physical_bound_screen"),
-                              (validation_ok, "held_out_validation"), (energy_ok,"held_out_energy_validation")):
-            if not passed:
-                report["bypassed_checks"].append(label)
-    report["validated"] = bool(best.success and identified and structural['supported'] and model_order_ok and not at_bound and validation_ok and energy_ok)
-    report["accepted"] = bool(best.success and structural['supported'] and not at_bound and (force or report["validated"]))
-    if report["accepted"]:
-        report.update(status="forced_provisional" if force else "accepted",
-                      reason="Forced provisional fit; normal quality gates bypassed" if force else "Physical identification and held-out 6/24-hour forecasts passed",
-                      parameters=candidate.to_dict())
+        report['bypassed_checks'].extend(label for passed,label in checks if not passed)
+    report['validated'] = bool(best.success and structural['supported'] and not restricted and all(passed for passed,_ in checks))
+    report['accepted'] = bool(best.success and structural['supported'] and initial_ok and not at_bound and (force or report['validated']))
+    if report['accepted']:
+        report.update(status='forced_provisional' if force else 'accepted',
+            reason='Forced provisional fit; normal quality gates bypassed' if force else 'Continuous simulation, short-period changes, energy and held-out forecasts passed',
+            parameters=candidate.to_dict())
         if timezone is not None:
-            check()
-            engine,_=daily_states(points,candidate,timezone,offset)
-            report["final_state"] = engine.snapshot()
-        elif states[-1] is not None:
-            report["final_state"] = {"timestamp": points[-1][0], "state": list(states[-1][0]), "covariance": list(states[-1][1])}
+            engine,_ = daily_states(points,candidate,timezone)
+            report['final_state'] = engine.snapshot()
+        else:
+            _,_,states,_ = filter_points(points,candidate,check,retain=True)
+            if states[-1] is not None:
+                report['final_state'] = {'timestamp':points[-1][0],'state':list(states[-1][0]),'covariance':list(states[-1][1])}
     else:
-        report["reason"] = ("Unsupported two-state structure; previous parameters retained" if not structural['supported'] else
-                            "Second-order model did not improve withheld forecasts" if not force and not model_order_ok else
-                            "Optimizer did not converge" if not best.success else
-                            "Physical parameters poorly identifiable" if not identified else
-                            "Physical parameter reached a bound" if at_bound else
-                            "Held-out heating energy failed coverage or accuracy checks" if not energy_ok else
-                            "Held-out forecasts failed coverage, error ceiling or baseline comparison")
-    report["elapsed_seconds"] = round(time.monotonic()-began, 3)
+        failures = [label for passed,label in checks if not passed]
+        if not structural['supported']: failures.insert(0,'unsupported_two_state_structure')
+        if not best.success: failures.insert(0,'optimizer_not_converged')
+        report['reason'] = 'Previous parameters retained: '+', '.join(failures)
+    report['elapsed_seconds'] = round(time.monotonic()-began,3)
     return report
 
 

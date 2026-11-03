@@ -164,14 +164,12 @@ class HouseIdentificationTests(unittest.TestCase):
         self.assertTrue(result["accepted"], result)
         for key in ("ci","ce","rie","rea","solar_area"):
             self.assertAlmostEqual(result["parameters"][key], getattr(self.truth,key), delta=getattr(self.truth,key)*.1)
-            self.assertGreater(result["approximate_confidence_intervals"][key]["upper_95"], 0)
         # The constant gain is correlated with overall heat loss. On this
-        # finite noisy record, require recovery within 100 W and coverage by
-        # the reported interval rather than asserting false 10% precision.
+        # finite noisy record, require recovery within 100 W. Engineering
+        # simulation weights do not justify statistical confidence intervals.
         self.assertAlmostEqual(result['parameters']['internal_gain'],self.truth.internal_gain,delta=.1)
-        interval=result['approximate_confidence_intervals']['internal_gain']
-        self.assertLess(interval['lower_95'],self.truth.internal_gain)
-        self.assertGreater(interval['upper_95'],self.truth.internal_gain)
+        self.assertEqual(result['approximate_confidence_intervals'],{})
+        self.assertTrue(result['identifiable'])
         self.assertLess(result["validation"]["24"]["rmse_K"], .15)
 
     def test_optimizer_coordinates_preserve_an_exact_zero_internal_gain(self):

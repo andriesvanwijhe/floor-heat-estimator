@@ -89,6 +89,16 @@ class EnergyTests(unittest.TestCase):
         p,points=steady()
         self.assertEqual(energy.fit_signature(points[:200],p)['status'],'insufficient_energy_data')
 
+    def test_zero_indoor_outdoor_difference_does_not_invent_heat_loss_precision(self):
+        p,points=steady(3)
+        for row in points:
+            row[2]=row[1]
+            row[3]=-p.solar_area*row[4]-p.internal_gain
+        signature=energy.fit_signature(points,p)
+        self.assertFalse(signature['signature_identifiable'])
+        self.assertEqual(signature['heat_loss_support_kW_K'],[.005,50])
+        self.assertEqual(signature['heat_loss_regression_allowance_kW_K'],50)
+
     def test_learning_modes_free_prior_fixed_are_explicit_and_distinct(self):
         from dataclasses import replace
         p,points=steady(8)

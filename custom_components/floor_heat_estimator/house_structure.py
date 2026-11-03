@@ -17,7 +17,7 @@ def structure(p, span_hours, timestep_hours=1/12):
     return {'supported':not reasons,'reasons':reasons,'time_constants_hours':times,'resistance_fraction':fraction}
 
 
-def first_order_errors(points, split, check):
+def first_order_errors(points, split, check, timezone=None, sigma_i=.02, sigma_y=.1):
     """Independent 1R1C training and later open-loop endpoint comparison."""
     from scipy.optimize import least_squares
     train=[row for row in points if row[0]<split]
@@ -41,14 +41,45 @@ def first_order_errors(points, split, check):
         bounds=([math.log(.005),math.log(.02),math.log(.001),0],
                 [math.log(50),math.log(2000),math.log(500),5]),max_nfev=80)
     if not fit.success:return {}
+    # Use the same observation-correction policy as the two-node comparator.
+    # Seeding every hourly forecast at its measured Ti would give the simpler
+    # model privileged information unavailable to a midnight-corrected twin.
+    if __package__:
+        from .house_model import midnight_due
+    else:
+        from house_model import midnight_due
+    h,c,area,gain=math.exp(fit.x[0]),math.exp(fit.x[1]),math.exp(fit.x[2]),fit.x[3]
+    decay=math.exp(-h/(12*c))
+    diffusion=sigma_i**2*(-math.expm1(-2*h/(12*c)))/(2*h/c)
+    states=[]
+    state=last=last_correction=None
+    variance=1.0
+    for t,room,outdoor,heat,solar in points:
+        if state is None or last is None or t-last>301:
+            state=room
+            variance=1.0
+        elif state is not None:
+            equilibrium=outdoor+(heat+area*solar+gain)/h
+            state=equilibrium+(state-equilibrium)*decay
+            variance=decay**2*variance+diffusion
+        if state is not None and room is not None and (timezone is None or midnight_due(t,last_correction,timezone)):
+            weight=variance/(variance+sigma_y**2)
+            state+=weight*(room-state)
+            variance*=1-weight
+            last_correction=t
+        states.append(state)
+        last=t
     errors={1:[],6:[],24:[]}
     for origin in range(0,len(points),12):
         check()
-        if points[origin][0]<split or points[origin][1] is None:continue
+        if points[origin][0]<split or points[origin][1] is None or states[origin] is None:continue
         for steps in (12,72,288):
             if origin+steps>=len(points):continue
             rows=points[origin:origin+steps+1]
             if any(b[0]-a[0]>301 for a,b in zip(rows,rows[1:])) or rows[-1][1] is None:continue
-            values=simulate(fit.x,rows)
-            if values:errors[steps//12].append(values[-1])
+            state=states[origin]
+            for _,_,outdoor,heat,solar in rows[1:]:
+                equilibrium=outdoor+(heat+area*solar+gain)/h
+                state=equilibrium+(state-equilibrium)*decay
+            errors[steps//12].append(state-rows[-1][1])
     return {str(k):{'rmse_K':math.sqrt(sum(e*e for e in v)/len(v)),'count':len(v)} for k,v in errors.items() if v}
