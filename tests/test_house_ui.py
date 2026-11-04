@@ -106,6 +106,17 @@ class HouseUITests(unittest.TestCase):
         self.assertEqual(config.validate_house(self.hass,house_const.HOUSE_DEFAULTS,True),{})
         self.assertIn('house_heat_input',config.validate_house(self.hass,{**house_const.HOUSE_DEFAULTS,'house_enabled':True},True))
 
+    def test_solar_uncertainty_and_imbalance_window_validation(self):
+        defaults=house_const.HOUSE_DEFAULTS.copy()
+        self.assertEqual(defaults['house_solar_uncertainty'],5)
+        self.assertEqual(defaults['house_solar_memory_hours'],3)
+        for minutes in (30,60):
+            self.assertEqual(config.validate_house(self.hass,{**defaults,
+                'house_solar_uncertainty':0,'house_heat_imbalance_minutes':minutes},True),{})
+        for key,value in (('house_heat_imbalance_minutes',45),('house_solar_uncertainty',-1),
+                          ('house_solar_memory_hours',0)):
+            self.assertIn(key,config.validate_house(self.hass,{**defaults,key:value},True))
+
     def test_three_page_configuration_keeps_floor_and_house_settings(self):
         flow=config.FloorConfigFlow()
         flow.hass=self.hass
@@ -127,8 +138,8 @@ class HouseUITests(unittest.TestCase):
             engine=SimpleNamespace(timestamp=None),active_intervals={})
         coordinator=SimpleNamespace(house=manager)
         entities=sensor.house_entities(coordinator,SimpleNamespace(entry_id='test'))
-        self.assertEqual(len(entities),26)
-        self.assertEqual(len({entity._attr_unique_id for entity in entities}),26)
+        self.assertEqual(len(entities),27)
+        self.assertEqual(len({entity._attr_unique_id for entity in entities}),27)
         status=next(entity for entity in entities if entity.key=='house_fit_status')
         self.assertEqual(status.native_value,'waiting')
         self.assertFalse(hasattr(status,'_attr_suggested_display_precision'))

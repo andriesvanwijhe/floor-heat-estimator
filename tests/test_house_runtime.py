@@ -107,6 +107,35 @@ class HouseRuntimeTests(unittest.IsolatedAsyncioTestCase):
         values['internal_gain']=-.1
         self.assertFalse(runtime.valid_parameters(values))
 
+    async def test_new_solar_options_preserve_calibration_and_reach_worker(self):
+        await self.fit()
+        original=self.manager.engine.parameters
+        saved=self.manager.store.saved
+        self.coordinator.settings.update(house_solar_uncertainty=8,house_solar_memory_hours=6,
+                                         house_heat_imbalance_minutes=30)
+        restored=runtime.HouseManager(self.coordinator)
+        restored.store.saved=saved
+        with patch.dict(sys.modules,modules):await restored.async_load()
+        self.assertEqual(restored.engine.parameters,original)
+        with patch.object(runtime,'prepare_fit_request',return_value=self.request), \
+             patch.object(runtime,'run_worker',AsyncMock(return_value=deepcopy(self.accepted))) as worker:
+            self.manager.start_fit(apply=False)
+            await self.manager.task
+        request=worker.call_args.args[0]
+        self.assertEqual(request['solar_uncertainty'],8)
+        self.assertEqual(request['solar_memory_hours'],6)
+
+    async def test_live_imbalance_needs_full_window_and_does_not_change_temperature(self):
+        p=self.manager.engine.parameters
+        self.manager.engine.state=(20,18)
+        self.manager.engine.covariance=(1,0,25)
+        self.manager.engine.timestamp=3600
+        for n in range(12):self.manager.heat_balance.push((n*300,(n+1)*300,.01),p)
+        self.assertAlmostEqual(self.manager.data()['house_heat_imbalance'],120)
+        self.assertEqual(self.manager.engine.state,(20,18))
+        self.manager.engine.timestamp=3900
+        self.assertNotIn('house_heat_imbalance',self.manager.data())
+
     async def test_old_zero_gain_calibration_is_invalidated_but_history_marker_survives(self):
         from_values={key:self.coordinator.settings[key] for key in runtime.HOUSE_KEYS if key!='house_internal_gain'}
         old_signature=runtime.house_signature(self.coordinator.settings)+hashlib.sha256(

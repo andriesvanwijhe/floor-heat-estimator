@@ -157,7 +157,7 @@ def forecast_errors(points, parameters, split_time, check=lambda: None, timezone
 
 def fit_house(request):
     import numpy as np
-    from scipy.optimize import least_squares
+    from scipy.optimize import least_squares, lsq_linear
 
     began = time.monotonic()
     budget = request.get("max_seconds", 900)
@@ -265,17 +265,32 @@ def fit_house(request):
     initial = np.array(pack(seed)[:PHYSICAL_COUNT])
     initial[2:4] = math.log(1/(seed.rie+seed.rea)), math.log(seed.rie/seed.rea)
     initial = np.clip(initial, lower+1e-6, upper-1e-6)
-    dataset = SimulationData(train, check)
+    solar_uncertainty = request.get('solar_uncertainty',0)
+    solar_memory = request.get('solar_memory_hours',3)
+    if (not isinstance(solar_uncertainty,(int,float)) or isinstance(solar_uncertainty,bool)
+            or not math.isfinite(solar_uncertainty) or not 0<=solar_uncertainty<=100
+            or not isinstance(solar_memory,(int,float)) or isinstance(solar_memory,bool)
+            or not math.isfinite(solar_memory) or not .25<=solar_memory<=48):
+        raise ValueError('Invalid solar uncertainty or memory')
+    dataset = SimulationData(train, check, solar_uncertainty, solar_memory)
+    unweighted_dataset = SimulationData(train, check) if solar_uncertainty else dataset
+    report['solar_weighting'] = {'uncertain_effective_area_m2':solar_uncertainty,
+        'memory_hours':solar_memory,'reference_heat_uncertainty_kW':ENERGY_SCALE,
+        'minimum_residual_weight':float(np.min(dataset.solar_weights)) if len(train) else None,
+        'mean_residual_weight':float(np.mean(dataset.solar_weights)) if len(train) else None,
+        'policy':'Fixed GHI and decaying exposure weights for RC identification; validation unweighted'}
+    if solar_uncertainty:
+        report['fitting_method']='continuous_simulation_solar_weighted_v1'
     if len(dataset.targets) < 24:
         report.update(reason="Need 24 measured training targets after segment initialization")
         return report
     h_centre = signature['heat_loss_kW_K']
     h_width = max(.05, math.log(h_max/h_centre), math.log(h_centre/h_min))
 
-    def evaluate(values):
+    def evaluate(values, data=dataset, profile=True, offsets=None):
         check()
         candidate = anchored(values)
-        result = dataset.evaluate(candidate, profile=True)
+        result = data.evaluate(candidate, profile=profile, offsets=offsets)
         penalties = [math.log((1/(candidate.rie+candidate.rea))/h_centre)/h_width]
         for resistance in (candidate.rie,candidate.rea):
             penalties.extend((100*max(0,math.log(.01/resistance)),
@@ -291,6 +306,44 @@ def fit_house(request):
                 getattr(candidate,key)/getattr(dynamics_prior,key)))
         result['all_residual'] = np.concatenate((result['residual'], penalties))
         return candidate, result
+
+    def fit_gains(values, rc_result):
+        """Affine gain-only solve at frozen RC and training initial states.
+
+        Physical units make this a bounded linear least-squares problem. GHI
+        uncertainty does not downweight this stage, and gains never feed back
+        into thermal parameters or select new observations/initial offsets.
+        """
+        values=values.copy()
+        gain_indices=[i for i in (4,5) if i in active]
+        if not solar_uncertainty or not gain_indices:
+            return values, anchored(values), rc_result, {'enabled':False,'converged':True}
+        frozen=rc_result['offsets']
+        candidate,base=evaluate(values,data=unweighted_dataset,profile=False,offsets=frozen)
+        residual=base['all_residual']
+        current=np.array([candidate.solar_area if i==4 else candidate.internal_gain for i in gain_indices])
+        columns=[]
+        for i,value in zip(gain_indices,current):
+            delta=1.0 if i==4 else .1
+            bound=500 if i==4 else 5
+            delta=delta if value+delta<=bound else -delta
+            trial=values.copy()
+            trial[i]=math.log(value+delta) if i==4 else value+delta
+            other=evaluate(trial,data=unweighted_dataset,profile=False,offsets=frozen)[1]['all_residual']
+            columns.append((other-residual)/delta)
+        design=np.array(columns).T
+        gain_fit=lsq_linear(design,design@current-residual,
+            bounds=([.001 if i==4 else 0 for i in gain_indices],
+                    [500 if i==4 else 5 for i in gain_indices]),max_iter=200,tol=1e-10)
+        check()
+        for i,value in zip(gain_indices,gain_fit.x):
+            values[i]=math.log(float(value)) if i==4 else float(value)
+        candidate,result=evaluate(values,data=unweighted_dataset,profile=False,offsets=frozen)
+        return values,candidate,result,{'enabled':True,'converged':bool(gain_fit.success),
+            'objective':float(.5*np.dot(result['all_residual'],result['all_residual'])),
+            'fixed_parameters':['ci','ce','rie','rea','initial_hidden_offsets'],
+            'gain_parameters':[PARAMETERS[i] for i in gain_indices],
+            'policy':'Unweighted temperature/change/energy residuals; configured gain modes and priors retained'}
 
     # Every start sees exactly the same observations and smooth residuals.
     fits = []
@@ -313,9 +366,15 @@ def fit_house(request):
         return report
     # A converged result takes priority; no validation data selects the start.
     best = min([v for v in fits if v.success] or fits,key=lambda v:v.fun)
-    candidate, training_result = evaluate(best.x)
-    report.update(status="rejected",optimizer_converged=bool(best.success),
-        optimizer_message=str(best.message),combined_objective=float(best.fun),
+    rc_values=best.x.copy()
+    rc_candidate, rc_result = evaluate(rc_values)
+    best.x,candidate,training_result,gain_stage=fit_gains(rc_values,rc_result)
+    stages_converged=bool(best.success and gain_stage['converged'])
+    report['rc_identification_parameters']=rc_candidate.to_dict()
+    report['rc_identification_objective']=float(best.fun)
+    report['gain_fit_stage']=gain_stage
+    report.update(status="rejected",optimizer_converged=stages_converged,
+        optimizer_message=str(best.message),combined_objective=float(.5*np.dot(training_result['all_residual'],training_result['all_residual'])),
         optimizer_starts=[{"converged":bool(v.success),"cost":float(v.fun)} for v in fits],
         candidate_parameters=candidate.to_dict(),
         initial_hidden_offsets_K=[{"start_utc":datetime.fromtimestamp(t,UTC).isoformat(),"offset_K":v}
@@ -361,11 +420,20 @@ def fit_house(request):
             rie=fraction/h,rea=(1-fraction)/h)
         restricted = True
         structural = structure(candidate,(train[-1][0]-train[0][0])/3600)
-        training_result = dataset.evaluate(candidate,profile=True)
+        fallback_values=np.array(pack(candidate)[:PHYSICAL_COUNT])
+        fallback_values[2:4]=math.log(h),math.log(candidate.rie/candidate.rea)
+        fallback_rc=evaluate(fallback_values)[1]
+        best.x,candidate,training_result,gain_stage=fit_gains(fallback_values,fallback_rc)
+        stages_converged=bool(best.success and gain_stage['converged'])
+        report['gain_fit_stage']=gain_stage
     report.update(active_structure=structural,dynamics_prior_dominated=restricted,
                   candidate_parameters=candidate.to_dict())
     signature['dynamics_prior_dominated'] = restricted
-    report['training_simulation'] = dataset.metrics(training_result)
+    report['training_simulation'] = unweighted_dataset.metrics(training_result)
+    report['optimizer_converged']=stages_converged
+    report['initial_hidden_offsets_K']=[{'start_utc':datetime.fromtimestamp(t,UTC).isoformat(),'offset_K':v}
+        for t,v in training_result['offsets'].items()]
+    report['resistance_anchor']['interior_fraction']=candidate.rie/(candidate.rie+candidate.rea)
     initial_ok = all(abs(v)<15 for v in training_result['offsets'].values())
     report['initial_state_supported'] = initial_ok
     physical_values = np.array(pack(candidate)[:PHYSICAL_COUNT])
@@ -390,12 +458,15 @@ def fit_house(request):
     baseline_result = all_data.evaluate(baseline,offsets=baseline_offsets)
     report.update(validation_simulation=all_data.metrics(full_result,after=split),
                   baseline_validation_simulation=all_data.metrics(baseline_result,after=split))
-    energy_training = dataset.energy_metrics(training_result)
+    energy_training = unweighted_dataset.energy_metrics(training_result)
     energy_validation = all_data.energy_metrics(full_result,after=split)
     energy_baseline = all_data.energy_metrics(baseline_result,after=split)
     energy_ok = bool(energy_validation['count'] and
         energy_validation['rmse_mean_load_kW']<=max(.15,.25*energy_validation['mean_measured_load_kW']) and
         energy_validation['rmse_mean_load_kW']<=max(.15,1.05*energy_baseline.get('rmse_mean_load_kW',0)))
+    report['heat_imbalance']={'interpretation':'Unweighted required heat minus recorded input; positive means additional heat is required',
+        'training':{str(minutes):unweighted_dataset.imbalance_metrics(training_result,minutes) for minutes in (30,60)},
+        'validation':{str(minutes):all_data.imbalance_metrics(full_result,minutes,after=split) for minutes in (30,60)}}
     report.update(energy_training=energy_training,energy_validation=energy_validation,
         baseline_energy_validation=energy_baseline,energy_validated=energy_ok,energy_anchor_enforced=True)
     enough = all(validation_metrics.get(str(h),{}).get('count',0)>=4 for h in (1,6,24))
@@ -416,8 +487,8 @@ def fit_house(request):
         (change_ok,'held_out_temperature_changes'),(model_order_ok,'second_order_improvement'))
     if force:
         report['bypassed_checks'].extend(label for passed,label in checks if not passed)
-    report['validated'] = bool(best.success and structural['supported'] and not restricted and all(passed for passed,_ in checks))
-    report['accepted'] = bool(best.success and structural['supported'] and initial_ok and not at_bound and (force or report['validated']))
+    report['validated'] = bool(stages_converged and structural['supported'] and not restricted and all(passed for passed,_ in checks))
+    report['accepted'] = bool(stages_converged and structural['supported'] and initial_ok and not at_bound and (force or report['validated']))
     if report['accepted']:
         report.update(status='forced_provisional' if force else 'accepted',
             reason='Forced provisional fit; normal quality gates bypassed' if force else 'Continuous simulation, short-period changes, energy and held-out forecasts passed',
@@ -432,7 +503,7 @@ def fit_house(request):
     else:
         failures = [label for passed,label in checks if not passed]
         if not structural['supported']: failures.insert(0,'unsupported_two_state_structure')
-        if not best.success: failures.insert(0,'optimizer_not_converged')
+        if not stages_converged: failures.insert(0,'optimizer_not_converged')
         report['reason'] = 'Previous parameters retained: '+', '.join(failures)
     report['elapsed_seconds'] = round(time.monotonic()-began,3)
     return report

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+- Add configurable solar uncertainty (default 5 m²) and a three-hour solar exposure decay to reduce solar-period influence on thermal-parameter fitting. Use fixed, continuous input-derived weights for temperatures, interval changes and energy residuals.
+- Follow weighted RC identification with an unweighted gain-only least-squares fit, freezing capacities, resistances and initial hidden states. Preserve fixed/prior/free gain modes and unweighted held-out acceptance. Zero uncertainty retains the previous joint objective.
+- Add House heat imbalance in W over a selectable complete 30/60-minute window, with signed bias/RMS attributes and unweighted training/validation diagnostics. Use measured room storage and modeled envelope exchange; exclude midnight correction jumps, gaps and calibration changes.
+- Preserve existing calibration, source sensors, recordings, floor fitting, midnight correction and refit schedule. No extra thermal state, heat-input adjustment or free imbalance parameter is introduced.
+- Add regression coverage for sunset memory, fixed input weights, gain-stage isolation, heat-balance signs/units, midnight corrections, missing data, source persistence and new configuration validation.
+
 ## 0.6.0
 
 - Replace house innovations-likelihood training with continuous simulation: no room-measurement, heating-restart or midnight corrections inside the fitting trajectory. Preserve live midnight corrections and configured heat input.

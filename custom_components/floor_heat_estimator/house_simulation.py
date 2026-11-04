@@ -28,7 +28,7 @@ class SimulationData:
     propagation. Missing drivers or a genuine time gap do.
     """
 
-    def __init__(self, points, check=lambda: None):
+    def __init__(self, points, check=lambda: None, solar_uncertainty=0, solar_memory_hours=3):
         import numpy as np
         self.check = check
         self.points = points
@@ -70,6 +70,36 @@ class SimulationData:
                         and self.segment_id[w['start']] == self.segment_id[w['end']]]
         self.window_weights = np.full(len(self.windows),
             math.sqrt(max(1, self.days)/max(1, len(self.windows)))/ENERGY_SCALE)
+        # Fixed input-uncertainty weights. GHI is kW/m² and uncertain effective
+        # area is m². A fixed exponential exposure proxy retains influence after
+        # sunset; neither weights nor memory depend on fitted RC/solar gain.
+        exposure = np.zeros(len(points))
+        memory = 0.0
+        previous = None
+        for i,row in enumerate(self.rows):
+            ghi = max(0,float(row[4])) if math.isfinite(row[4]) else 0.0
+            if previous is None:
+                memory = ghi
+            else:
+                decay = math.exp(-max(0,row[0]-previous)/(3600*solar_memory_hours))
+                memory = memory*decay+ghi*(1-decay)
+            exposure[i] = math.hypot(ghi,memory)
+            previous = row[0]
+        self.solar_exposure = exposure
+        self.solar_uncertainty = solar_uncertainty
+        self.solar_memory_hours = solar_memory_hours
+        def weight(value):
+            return 1/np.sqrt(1+(solar_uncertainty*value/ENERGY_SCALE)**2)
+        self.solar_weights = weight(exposure)
+        self.target_weights *= self.solar_weights[self.targets]
+        square_prefix = np.concatenate(([0.],np.cumsum(exposure**2)))
+        for lag,(left,right,weights) in self.pairs.items():
+            pair_exposure = np.sqrt((square_prefix[right+1]-square_prefix[left])/(lag+1))
+            self.pairs[lag] = (left,right,weights*weight(pair_exposure))
+        for i,w in enumerate(self.windows):
+            # Solar model errors are temporally correlated: average exposure,
+            # rather than dividing uncertainty by sqrt(number of samples).
+            self.window_weights[i] *= weight(float(np.mean(exposure[w['start']:w['end']+1])))
 
     def _day_weights(self, indices):
         import numpy as np
@@ -230,3 +260,26 @@ class SimulationData:
                 'bias_mean_load_kW': sum(errors)/len(errors),
                 'mean_measured_load_kW': sum(abs(w['measured_kWh'])/w['hours'] for w in records)/len(records),
                 'windows': records}
+
+    def imbalance_metrics(self, result, minutes, after=None):
+        """Unweighted signed rolling 30/60-minute heat residuals in W."""
+        import numpy as np
+        lag = int(minutes/5)
+        residual = result['energy']-self.rows[:,3]/12
+        valid = np.isfinite(residual)
+        sums = np.concatenate(([0.],np.cumsum(np.where(valid,residual,0))))
+        counts = np.concatenate(([0],np.cumsum(valid)))
+        values = []
+        for end in range(lag,len(self.rows)):
+            start = end-lag
+            if (self.segment_id[start]<0 or self.segment_id[start]!=self.segment_id[end]
+                    or (after is not None and self.rows[start,0]<after)
+                    or counts[end+1]-counts[start+1]!=lag):
+                continue
+            values.append(1000*(sums[end+1]-sums[start+1])/(minutes/60))
+        if not values:
+            return {'window_minutes':minutes,'count':0}
+        return {'window_minutes':minutes,'count':len(values),
+                'bias_W':sum(values)/len(values),
+                'rms_W':math.sqrt(sum(v*v for v in values)/len(values)),
+                'mean_absolute_W':sum(abs(v) for v in values)/len(values)}

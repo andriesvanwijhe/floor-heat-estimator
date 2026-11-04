@@ -20,6 +20,7 @@ from .house_data import (append_row, floor_signature, house_signature, make_bins
                          prepare_fit_request, settings_signature, solar_state)
 from .house_model import HouseEstimator, HouseParameters
 from .house_forecast import tomorrow_demand
+from .house_balance import HeatBalanceTracker
 from .source import numeric_state
 
 _LOGGER = logging.getLogger(__name__)
@@ -106,6 +107,7 @@ class HouseManager:
         self.recovery_attempt=0
         self.initialization_report={'status':'waiting'}
         self.floor_energy_checkpoint=None
+        self.heat_balance = HeatBalanceTracker()
 
     @property
     def settings(self):
@@ -156,6 +158,9 @@ class HouseManager:
                         house_tomorrow_peak_heat_load=self.forecast["peak_load_kW"])
         for horizon in (1, 6, 24):
             data[f"house_validation_{horizon}h"] = self.report.get("validation", {}).get(str(horizon), {}).get("rmse_K")
+        imbalance = self.heat_balance.data(self.settings['house_heat_imbalance_minutes'])
+        if imbalance and self.engine.timestamp is not None and abs(imbalance['end_utc_epoch']-self.engine.timestamp)<1:
+            data['house_heat_imbalance'] = imbalance['value_W']
         state = self.engine.state
         if state is not None:
             data.update(house_interior_temperature=state[0], house_envelope_temperature=state[1],
@@ -276,10 +281,14 @@ class HouseManager:
         # full-history binning use executor/process workers.
         bins = make_bins(list(self.rows)[-30:], self.settings["house_max_gap_minutes"]*60, now.timestamp())
         for point in bins:
+            previous = self.engine.timestamp
             self.engine.step(point)
+            if self.engine.timestamp != previous:
+                self.heat_balance.push(self.engine.last_heat_balance_interval,self.engine.parameters)
         if (self.engine.timestamp is not None
                 and now.timestamp()-self.engine.timestamp > self.settings["house_max_gap_minutes"]*60):
             self.engine.state = self.engine.covariance = self.engine.timestamp = None
+            self.heat_balance.clear()
         await self.save_state()
         due = self.next_refit
         if due is not None and now.timestamp() >= due and not self.busy:
@@ -347,6 +356,8 @@ class HouseManager:
                     dynamics_prior=self.engine.parameters.to_dict() if self.active_parameters and not self.active_provisional else configured_parameters(settings).to_dict(),
                     gain_modes={'solar_area':settings['house_solar_learning'],'internal_gain':settings['house_internal_learning']},
                     ratio_prior_strength=settings['house_ratio_prior_strength'],capacity_prior_strength=settings['house_capacity_prior_strength'],
+                    solar_uncertainty=settings['house_solar_uncertainty'],
+                    solar_memory_hours=settings['house_solar_memory_hours'],
                     energy_prior=configured_parameters(settings).to_dict(),
                     force=force, correction_timezone=self.timezone,
                     maximum_rmse=settings["house_max_fit_rmse"], max_seconds=settings["house_max_fit_minutes"]*60)
@@ -384,6 +395,7 @@ class HouseManager:
                         self.last_accepted = previous_accepted
                         raise
                     self.active_parameters, self.calibrated_floor, self.engine = values, snapshot_floor, engine
+                    self.heat_balance.clear()
                     self.active_provisional = provisional
                     self.active_energy_anchor = anchor
                     self.active_intervals = self.report.get("approximate_confidence_intervals", {})
@@ -424,6 +436,7 @@ class HouseManager:
         self.active_energy_anchor = None
         self.active_intervals = {}
         self.engine = HouseEstimator(configured_parameters(self.settings), self.timezone)
+        self.heat_balance.clear()
         self.update_forecast(datetime.now(UTC))
         self.coordinator.async_update_listeners()
 

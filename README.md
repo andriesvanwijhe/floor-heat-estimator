@@ -2,7 +2,7 @@
 
 An experimental Home Assistant custom integration for estimating heat released by an underfloor heating circuit during heating and cooldown.
 
-Version 0.6.0 fits house dynamics using continuous temperature simulations, fixed 30/60/180-minute temperature-change errors and daily energy balance. Total thermal resistance stays anchored to the measured energy signature. Floor fitting and live midnight correction are unchanged. The house model follows Bacher & Madsen (2011), Figure 1, with fitted constant internal heat gain (initially 500 W). It includes initial Recorder history import, separate house fitting settings, hidden envelope temperature and physical-parameter entities. Models can use manual coefficients or validated learned coefficients. Floor and house identification remain separate stages of the thermal-analysis tool.
+Version 0.7.0 adds solar-uncertainty weighting for house thermal identification, a separate gain-only fitting stage, and a signed heat-imbalance diagnostic. House dynamics use continuous temperature simulations, fixed 30/60/180-minute temperature-change errors and daily energy balance. Total thermal resistance stays anchored to the measured energy signature. Floor fitting and live midnight correction are unchanged. The house model follows Bacher & Madsen (2011), Figure 1, with fitted constant internal heat gain (initially 500 W). It includes initial Recorder history import, separate house fitting settings, hidden envelope temperature and physical-parameter entities. Models can use manual coefficients or validated learned coefficients. Floor and house identification remain separate stages of the thermal-analysis tool.
 
 ## What it provides
 
@@ -260,10 +260,11 @@ Rejected, insufficient, timed-out and failed fits preserve the active coefficien
 
 ### House entities
 
-Enabling adds 23 diagnostic sensors, three tomorrow-demand sensors and four buttons on the existing device. Existing floor entity unique IDs are unchanged.
+Enabling adds 24 diagnostic sensors, three tomorrow-demand sensors and four buttons on the existing device. Existing floor entity unique IDs are unchanged.
 
 | Entity name | Unit / interpretation |
 |---|---|
+| House heat imbalance | W; unexplained observed interior heat balance over a complete 30/60-minute window |
 | House envelope temperature | °C; inferred hidden Te, not a measured wall temperature |
 | House estimated interior temperature | °C; filtered Ti, alongside the original thermometer |
 | House envelope temperature standard uncertainty | K; conditional Kalman state standard deviation |
@@ -436,3 +437,38 @@ A short interruption can end in a different non-heating mode: for example, `dhw`
 Update through HACS, restart Home Assistant, then use **Fit house now** (or import history and fit if needed). Existing accepted/provisional coefficients, source choices, recorded history, live correction policy and floor calibration are preserved. Updating does not force a fit or replace parameters before validation. The default refit schedule remains unchanged. New diagnostics appear under **House fit status → report**.
 
 Measured heat-pump heat input remains a valid configurable source; its history is used as recorded. This fit then represents the combined heating-system/house response at that input boundary. The integration does not switch it to estimated floor output. The solar input remains the configured GHI sensor; window-oriented direct/diffuse solar modeling is a separate future change.
+
+
+## Solar uncertainty and heat imbalance (v0.7.0)
+
+In **Settings → Devices & services → Floor Heat Estimator → Configure → House**, three settings are added:
+
+| Setting | Default | Meaning |
+|---|---:|---|
+| Solar uncertainty for thermal fitting | 5 m² | Uncertain effective solar area, 0–100 m²; larger values reduce solar-period influence on RC identification |
+| Solar influence decay after sunset | 3 h | Exponential memory of GHI used only for fitting weights, 0.25–48 h |
+| Heat imbalance window | 60 min | Complete rolling observed-energy window; choose 30 or 60 minutes |
+
+This does not change your configured solar sensor, heat input, two-temperature model, floor model or midnight correction. The new settings preserve active coefficients, history and live model state across reloads. They take effect on the next fit; press **Fit house now** after updating/restarting. A rejected fit still retains the old calibration. The default weekly refit schedule remains in effect.
+
+### Solar influence on fitting
+
+At each training timestamp, compute an exponential GHI average with the configured memory. Let `G_eff = sqrt(GHI² + average_GHI²)` (GHI in kW/m²). The fixed residual multiplier is `w = 1/sqrt(1 + (uncertain_area * G_eff / 0.15 kW)²)`. Thus strong sun reduces influence immediately and prior solar exposure decays after sunset. This is an input-uncertainty proxy, not a simulated extra thermal store or a claim to know actual solar gain.
+
+The multiplier applies to temperature, fixed-lag change and energy residuals during RC identification. Change terms use RMS exposure across their whole time interval; energy terms use mean exposure and do not assume solar errors average away as independent samples. Weights, data selection and exposure memory are computed once from training timestamps/GHI, independent of all trial capacities, resistances, gains and temperatures. The energy-signature support still anchors total resistance; weighting does not make heat-loss inference completely independent of solar assumptions.
+
+With nonzero solar uncertainty, the best converged thermal candidate is followed by a bounded linear least-squares **gain-only** stage. This stage uses unweighted training residuals and the existing fixed/prior/free gain modes. Both capacities, both resistances and the initial hidden-state offsets are frozen. Solar/internal gains cannot move the RC split again. Validation, daily energy acceptance and reported 30/60/180-minute errors remain fully unweighted. Neither training weights nor gain selection uses future validation targets.
+
+Set solar uncertainty to **0** to disable both weighting and the separate gain stage, retaining the v0.6.0 joint objective. The nonzero default is intended to reduce sensitivity to an imperfect GHI model, not guarantee that the solar peak or every heating cycle will be reproduced. Fit diagnostics expose `solar_weighting`, `rc_identification_parameters`, `rc_identification_objective`, and `gain_fit_stage`.
+
+### Heat imbalance sensor
+
+**House heat imbalance** is signed power in W, calculated from measured room temperature and the modeled envelope temperature:
+
+`imbalance energy = Ci * measured room-temperature change + integral((measured Ti - estimated Te)/Rie) - integral(heating + solar gain + internal gain)`
+
+Divide by the configured 30/60-minute interval to obtain mean power. Positive means additional heat would be required to explain the observed temperature trajectory; negative means extra cooling or less input. This residual can also reflect wrong parameters, heat-input timing, weather errors or thermostat measurement effects. It is not a direct measurement of occupancy, ventilation or solar gains, and no fitted heat-imbalance input is added to the state equations.
+
+Room temperature is integrated by trapezoids, rather than a noisy instantaneous derivative. The envelope integral follows the exact constant-input model transition **before** midnight Kalman correction. Correction jumps are never counted as physical stored heat. Missing room/driver intervals, genuine gaps and parameter changes invalidate the averaging window. The sensor initially needs one complete 30/60-minute window and may remain unavailable when inputs are incomplete. A restart retains compatible house state but rebuilds this diagnostic window.
+
+Sensor attributes include the interval endpoints and bias/RMS of available overlapping rolling windows ending within the last 24 hours. These are descriptive statistics, not independent samples or confidence intervals. `House fit status → report.heat_imbalance.training` and `.validation` expose **unweighted** bias, RMS and mean absolute imbalance in W for both 30- and 60-minute windows. Fit diagnostics use the continuous simulated envelope trajectory; the live diagnostic uses the midnight-corrected envelope estimate. Heat imbalance never corrects model temperatures or changes predicted heat demand.

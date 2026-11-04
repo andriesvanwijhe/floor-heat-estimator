@@ -68,7 +68,15 @@
           "house_solar_learning": "Solar area learning mode",
           "house_internal_learning": "Internal gain learning mode",
           "house_ratio_prior_strength": "Resistance split prior strength",
-          "house_capacity_prior_strength": "Heat capacity prior strength"
+          "house_capacity_prior_strength": "Heat capacity prior strength",
+          "house_solar_uncertainty": "Solar uncertainty for thermal fitting (m²)",
+          "house_solar_memory_hours": "Solar influence decay after sunset (hours)",
+          "house_heat_imbalance_minutes": "Heat imbalance window (30 or 60 minutes)"
+        },
+        "data_description": {
+          "house_solar_uncertainty": "Uncertain effective solar area. Higher values reduce solar influence on RC identification; 0 disables weighting and the separate gain stage. Validation always uses full weight.",
+          "house_solar_memory_hours": "Decay time of the stored-solar exposure proxy used only for fitting weights.",
+          "house_heat_imbalance_minutes": "A signed diagnostic over a complete measured window. Positive values indicate additional heat required by the observed room temperature."
         }
       }
     },
@@ -143,7 +151,15 @@
           "house_solar_learning": "Solar area learning mode",
           "house_internal_learning": "Internal gain learning mode",
           "house_ratio_prior_strength": "Resistance split prior strength",
-          "house_capacity_prior_strength": "Heat capacity prior strength"
+          "house_capacity_prior_strength": "Heat capacity prior strength",
+          "house_solar_uncertainty": "Solar uncertainty for thermal fitting (m²)",
+          "house_solar_memory_hours": "Solar influence decay after sunset (hours)",
+          "house_heat_imbalance_minutes": "Heat imbalance window (30 or 60 minutes)"
+        },
+        "data_description": {
+          "house_solar_uncertainty": "Uncertain effective solar area. Higher values reduce solar influence on RC identification; 0 disables weighting and the separate gain stage. Validation always uses full weight.",
+          "house_solar_memory_hours": "Decay time of the stored-solar exposure proxy used only for fitting weights.",
+          "house_heat_imbalance_minutes": "A signed diagnostic over a complete measured window. Positive values indicate additional heat required by the observed room temperature."
         }
       },
       "underfloor": {

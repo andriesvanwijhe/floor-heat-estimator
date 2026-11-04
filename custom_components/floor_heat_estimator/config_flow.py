@@ -97,7 +97,7 @@ def house_schema(defaults):
             selector.EntitySelectorConfig(domain=["sensor", "input_number"]))
     for key, (low, high, unit) in HOUSE_LIMITS.items():
         fields[vol.Required(key, default=defaults[key])] = selector.NumberSelector(
-            selector.NumberSelectorConfig(min=low, max=high, step="any",
+            selector.NumberSelectorConfig(min=low, max=high, step=30 if key=="house_heat_imbalance_minutes" else "any",
                 mode=selector.NumberSelectorMode.BOX, **({'unit_of_measurement':unit} if unit is not None else {})))
     for key in ("house_learning_enabled", "house_apply_fitted_parameters", "house_import_history_on_start"):
         fields[vol.Required(key, default=defaults[key])] = selector.BooleanSelector()
@@ -112,6 +112,8 @@ def validate_house(hass, values, record_samples):
         value = values.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
             return {key: "invalid_parameter"}
+    if values['house_heat_imbalance_minutes'] not in (30, 60):
+        return {'house_heat_imbalance_minutes': 'invalid_parameter'}
     if not values["house_enabled"]:
         return {}
     if values["house_learning_enabled"] and not record_samples:

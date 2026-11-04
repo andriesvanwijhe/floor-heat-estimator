@@ -10,6 +10,11 @@ import math
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+if __package__:
+    from .house_balance import interval_imbalance
+else:
+    from house_balance import interval_imbalance
+
 
 def midnight_due(timestamp, previous, timezone):
     """First completed local-midnight bin; retry missing room data until 01:00."""
@@ -113,13 +118,17 @@ class HouseEstimator:
         self.timestamp = None
         self.state = None
         self.covariance = None
+        self.previous_room = None
+        self.last_heat_balance_interval = None
 
     def step(self, point):
         t, room, outdoor, heat, solar = point
         if self.timestamp is not None and t <= self.timestamp:
             return
+        self.last_heat_balance_interval = None
         if any(value is None or not math.isfinite(value) for value in (outdoor, heat, solar)):
             self.state = self.covariance = self.timestamp = None
+            self.previous_room = None
             return
         if self.timestamp is None or t-self.timestamp > 301:
             if room is None:
@@ -128,20 +137,26 @@ class HouseEstimator:
             self.state, self.covariance = initial_state(room, outdoor, self.parameters)
         else:
             coefficients = transition(self.parameters, (t-self.timestamp)/3600)
+            before = self.state
             self.state = advance(self.state, outdoor, heat, solar, self.parameters, coefficients)
             self.covariance = predict_covariance(self.covariance, coefficients)
+            residual = interval_imbalance(before,self.state,self.previous_room,room,
+                outdoor,heat,solar,self.parameters,(t-self.timestamp)/3600)
+            if residual is not None:
+                self.last_heat_balance_interval = (self.timestamp,t,residual)
         if room is not None and (self.correction_timezone is None or
                 midnight_due(t, self.last_correction, self.correction_timezone)):
             self.state, self.covariance, _, _ = correct(
                 self.state, self.covariance, room, self.parameters.sigma_y**2)
             self.last_correction = t
         self.timestamp = t
+        self.previous_room = room
 
     def snapshot(self):
         if self.state is None:
             return None
         return {"timestamp": self.timestamp, "state": list(self.state), "covariance": list(self.covariance),
-                "last_correction": self.last_correction}
+                "last_correction": self.last_correction, "previous_room":self.previous_room}
 
     def restore(self, saved):
         try:
@@ -159,4 +174,8 @@ class HouseEstimator:
             return False
         self.timestamp, self.state, self.covariance = t, tuple(state), tuple(cov)
         self.last_correction = correction
+        previous_room = saved.get('previous_room')
+        self.previous_room = (previous_room if isinstance(previous_room,(int,float))
+            and not isinstance(previous_room,bool) and math.isfinite(previous_room) else None)
+        self.last_heat_balance_interval = None
         return True

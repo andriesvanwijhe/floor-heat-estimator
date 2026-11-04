@@ -15,6 +15,7 @@ DESCRIPTIONS = (
     ("house_interior_temperature", "House estimated interior temperature", "°C"),
     ("house_envelope_uncertainty", "House envelope temperature standard uncertainty", "K"),
     ("house_solar_gain", "House estimated solar gain", "kW"),
+    ("house_heat_imbalance", "House heat imbalance", "W"),
     ("house_interior_envelope_flow", "House interior to envelope heat flow", "kW"),
     ("house_outdoor_heat_flow", "House envelope to outdoor heat flow", "kW"),
     ("house_ci", "House interior heat capacity", "kWh/K"),
@@ -61,7 +62,7 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
         elif key != "house_fit_status":
             self._attr_native_unit_of_measurement = unit
             self._attr_state_class = SensorStateClass.MEASUREMENT
-            self._attr_suggested_display_precision = 0 if key == "house_point_count" else 3
+            self._attr_suggested_display_precision = 0 if key in ("house_point_count", "house_heat_imbalance") else 3
             if unit == "°C":
                 self._attr_device_class = SensorDeviceClass.TEMPERATURE
             elif unit in ("kW", "W"):
@@ -101,6 +102,13 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
                 automatic_learning=manager.settings["house_learning_enabled"] and manager.settings["record_samples"])
         if self.key == "house_envelope_uncertainty":
             attributes["interpretation"] = "Conditional Kalman state standard deviation; excludes parameter and floor-input uncertainty"
+        if self.key == 'house_heat_imbalance':
+            attributes.update(manager.heat_balance.data(manager.settings['house_heat_imbalance_minutes']),
+                interpretation='Observed interior heat balance conditional on estimated envelope temperature; positive requires additional heat, negative additional cooling or less input',
+                heat_source=manager.settings['house_heat_input'],
+                method='Measured room storage + interior/envelope exchange - heating, solar and internal gains; interval before Kalman correction',
+                statistics='Bias/RMS of available overlapping windows, up to 24 hours; not independent observations')
+            attributes.pop('value_W',None)
         if self.key in ("house_heat_loss_coefficient", "house_solar_area", "house_internal_gain"):
             attributes["active_energy_signature"] = getattr(manager,"active_energy_anchor",None)
         if self.key == "house_interior_temperature":

@@ -25,6 +25,9 @@ HOUSE_DEFAULTS = {
     "house_internal_learning": "prior",
     "house_ratio_prior_strength": 1.0,
     "house_capacity_prior_strength": 1.0,
+    "house_solar_uncertainty": 5.0,
+    "house_solar_memory_hours": 3.0,
+    "house_heat_imbalance_minutes": 60.0,
 }
 
 HOUSE_KEYS = ("house_ci", "house_ce", "house_rie", "house_rea", "house_solar_area", "house_internal_gain")
@@ -44,4 +47,7 @@ HOUSE_LIMITS = {
     "house_forecast_target": (5, 30, "°C"),
     "house_ratio_prior_strength": (0, 10, None),
     "house_capacity_prior_strength": (0, 10, None),
+    "house_solar_uncertainty": (0, 100, "m²"),
+    "house_solar_memory_hours": (0.25, 48, "h"),
+    "house_heat_imbalance_minutes": (30, 60, "min"),
 }
