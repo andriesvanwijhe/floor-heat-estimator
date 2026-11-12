@@ -21,7 +21,7 @@ LIMITS = {
     "exponent": (0.5, 3, None),
     "exponent_min": (0.5, 3, None),
     "exponent_max": (0.5, 3, None),
-    "floor_fit_max_minutes": (1, 30, "min"),
+    "floor_fit_max_minutes": (1, 60, "min"),
     "maximum_gap_minutes": (1, 60, "min"),
     "maximum_prediction_hours": (1, 168, "h"),
     "learning_days": (2, 90, "d"),
@@ -41,8 +41,10 @@ def source_schema(defaults):
 
 
 def parameter_schema(defaults):
-    fields = {}
+    fields = {vol.Required('legacy_linear_enabled', default=defaults.get('legacy_linear_enabled',False)): selector.BooleanSelector()}
     for key, (low, high, unit) in LIMITS.items():
+        if key.startswith('linear_') and not defaults.get('legacy_linear_enabled',False):
+            continue
         settings = dict(min=low, max=high, step="any", mode=selector.NumberSelectorMode.BOX)
         if unit is not None:
             settings["unit_of_measurement"] = unit
@@ -99,7 +101,7 @@ def house_schema(defaults):
         fields[vol.Required(key, default=defaults[key])] = selector.NumberSelector(
             selector.NumberSelectorConfig(min=low, max=high, step=30 if key=="house_heat_imbalance_minutes" else "any",
                 mode=selector.NumberSelectorMode.BOX, **({'unit_of_measurement':unit} if unit is not None else {})))
-    for key in ("house_learning_enabled", "house_apply_fitted_parameters", "house_import_history_on_start"):
+    for key in ("house_learning_enabled", "house_apply_fitted_parameters", "house_import_history_on_start", "house_dynamic_enabled"):
         fields[vol.Required(key, default=defaults[key])] = selector.BooleanSelector()
     return vol.Schema(fields)
 

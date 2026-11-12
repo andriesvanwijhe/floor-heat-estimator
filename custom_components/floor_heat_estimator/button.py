@@ -11,7 +11,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([FitNowButton(coordinator, entry), ImportHistoryButton(coordinator, entry)])
     if getattr(coordinator, "house", None) is not None:
-        async_add_entities([HouseButton(coordinator, entry, action) for action in ("fit", "import", "force", "reset")])
+        async_add_entities([HouseButton(coordinator, entry, action) for action in ("fit", "import", "force", "reset",'predict')])
 
 
 class FitNowButton(ButtonEntity):
@@ -48,11 +48,13 @@ class HouseButton(FitNowButton):
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN,entry.entry_id+'_house')})
         self._attr_name = {"fit": "Fit house now", "import": "Import house history and fit",
                            "force": "Import and apply provisional house fit",
-                           "reset": "Restore manual house parameters"}[action]
+                           "reset": "Restore manual house parameters",'predict':'Update dynamic forecast'}[action]
         self._attr_unique_id = f"{entry.entry_id}_house_{action}"
 
     async def async_press(self):
-        if self.action == "reset":
+        if self.action == 'predict':
+            self.coordinator.house.start_dynamic_forecast()
+        elif self.action == "reset":
             await self.coordinator.house.async_reset()
         elif self.action == "force":
             self.coordinator.house.start_fit(import_history=True,force=True,apply=True)

@@ -50,11 +50,13 @@ FIT_DESCRIPTIONS = (
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
+    def enabled(description):
+        return coordinator.settings.get('legacy_linear_enabled',False) or not description[0].startswith('linear_')
     async_add_entities([
-        *(FloorSensor(coordinator, entry, *description) for description in DESCRIPTIONS),
+        *(FloorSensor(coordinator, entry, *description) for description in DESCRIPTIONS if enabled(description)),
         *(FloorParameterSensor(coordinator, entry, *description)
-          for description in PARAMETER_DESCRIPTIONS),
-        *(FloorFitSensor(coordinator, entry, *description) for description in FIT_DESCRIPTIONS),
+          for description in PARAMETER_DESCRIPTIONS if enabled(description)),
+        *(FloorFitSensor(coordinator, entry, *description) for description in FIT_DESCRIPTIONS if enabled(description)),
     ])
     if getattr(coordinator, "house", None) is not None:
         from .house_sensor import house_entities
@@ -84,7 +86,7 @@ class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
-        if self.key == "linear_power":
+        if self.key == "nonlinear_power" or (self.key == 'linear_power' and self.coordinator.settings.get('legacy_linear_enabled',False)):
             previous = await self.async_get_last_state()
             if previous:
                 self.coordinator.restore(previous.attributes.get("estimator_state"))
@@ -121,6 +123,8 @@ class FloorSensor(CoordinatorEntity, SensorEntity, RestoreEntity):
                 "coefficient_kW_per_K_to_n": settings["nonlinear_output_at_5k"] / 5 ** settings["exponent"],
                 "capacity_kWh_per_K": settings["nonlinear_capacity"],
                 "calibration_signature": floor_signature(settings)})
+            if not settings.get('legacy_linear_enabled',False):
+                attributes['estimator_state'] = self.coordinator.stored_state()
         return attributes
 
 

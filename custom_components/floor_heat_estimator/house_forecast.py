@@ -5,6 +5,50 @@ import math
 from zoneinfo import ZoneInfo
 
 
+def weather_intervals(attributes, start, timezone, maximum_hours=48, minimum_hours=24):
+    """Rolling five-minute-aligned horizon; radiation is preceding-hour mean.
+
+    Only consecutive real forecast hours are used. Never extrapolate a weather
+    source or substitute zeros for missing radiation. Partial first/last clock
+    hours retain their actual duration, including daylight-saving transitions.
+    """
+    times=attributes.get('time',[])
+    temperatures=attributes.get('temperature_2m',[])
+    radiation=attributes.get('shortwave_radiation',[])
+    if not times or not len(times)==len(temperatures)==len(radiation):
+        return []
+    zone=ZoneInfo(attributes.get('timezone') or timezone)
+    rows={}
+    for raw,temperature,ghi in zip(times,temperatures,radiation):
+        try:
+            if isinstance(raw,bool): return []
+            if isinstance(raw,(int,float)): stamp=float(raw)
+            else:
+                value=datetime.fromisoformat(str(raw).replace('Z','+00:00'))
+                if value.tzinfo is None:
+                    if value.replace(tzinfo=zone,fold=0).utcoffset()!=value.replace(tzinfo=zone,fold=1).utcoffset():
+                        return []
+                    value=value.replace(tzinfo=zone)
+                stamp=value.timestamp()
+            if not math.isfinite(stamp) or stamp in rows: return []
+            rows[stamp]=(temperature,ghi)
+        except (TypeError,ValueError,OverflowError): return []
+    result=[];cursor=start;finish=start+maximum_hours*3600
+    while cursor<finish:
+        boundary=math.floor(cursor/3600)*3600
+        current,following=rows.get(boundary),rows.get(boundary+3600)
+        if current is None or following is None:break
+        t0,t1,ghi=current[0],following[0],following[1]
+        if any(isinstance(v,bool) or not isinstance(v,(float,int)) or not math.isfinite(v) for v in (t0,t1,ghi)) or ghi<0:
+            break
+        end=min(boundary+3600,finish)
+        midpoint=((cursor+end)/2-boundary)/3600
+        result.append({'start':float(cursor),'seconds':float(end-cursor),
+            'outdoor_C':float(t0+(t1-t0)*midpoint),'solar_kW_m2':float(ghi/1000)})
+        cursor=end
+    return result if cursor-start>=minimum_hours*3600 else []
+
+
 def tomorrow_demand(attributes, parameters, now, timezone, target=20):
     """Require full local-day coverage; GHI is the preceding hour's mean.
 

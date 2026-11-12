@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.0
+
+- Preserve the existing tomorrow steady-state prediction and add an hourly
+  dynamic forecast using coupled house/envelope/exponent-floor states.
+- Predict solar/stored-heat overshoot, pump input, floor output, outdoor losses,
+  storage changes and explicit capacity/comfort shortfalls. Optimize up to 48h
+  with five-minute steps; report the first 24h without future state corrections.
+- Add configurable automatic/manual prediction, thermal power/horizon/runtime
+  limits, status/temperature/energy entities and serialized background workers.
+- Make exponent-only floor operation/learning the default, retaining optional
+  linear compatibility and existing exponent snapshot/entity identifiers.
+- Use an exact nonlinear zero-input cooldown to reduce long floor-fit CPU work.
+- Add a Home Assistant independent JSON service, numerical-only build tool,
+  compilation recipe, resource instrumentation and reproducible benchmarks.
+- Allow floor fitting budgets up to 60 minutes for slower standalone/ARM systems.
+
 ## 0.7.0
 
 - Add configurable solar uncertainty (default 5 m²) and a three-hour solar exposure decay to reduce solar-period influence on thermal-parameter fitting. Use fixed, continuous input-derived weights for temperatures, interval changes and energy residuals.

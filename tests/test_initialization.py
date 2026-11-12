@@ -17,7 +17,7 @@ house=importlib.import_module('_init_tests.house_model')
 
 class ReplayTests(unittest.TestCase):
     def setUp(self):
-        self.settings={**const.DEFAULTS,'settling_minutes':2}
+        self.settings={**const.DEFAULTS,'settling_minutes':2,'legacy_linear_enabled':True}
         self.samples=[model.Sample(100000+n*60,20,3 if n<6 else 0,30,26,300 if n<6 else 0,'hc' if n<6 else 'off') for n in range(30)]
 
     def test_replay_matches_uninterrupted_model_during_cooldown(self):

@@ -60,6 +60,16 @@ temperature due solely to heat loss.
         return room + power / k + (theta - power / k) * math.exp(-k * hours / c)
     remaining = hours
     temperature = float(temperature)
+    if power == 0 and temperature > room:
+        # Exact power-law cooldown is both faster and independent of substep
+        # size. Off periods dominate long training histories on small CPUs.
+        theta=temperature-room
+        delta=parameters.exponent-1
+        rate=parameters.output_at_5k/(5**parameters.exponent*c)
+        if abs(delta)<1e-8:
+            return room+theta*math.exp(-rate*hours)
+        factor=delta*rate*theta**delta*hours
+        return room if factor<=-1 else room+theta*math.exp(-math.log1p(factor)/delta)
     while remaining > 1e-12:
         theta = max(temperature - room, 0.0)
         loss = parameters.output(temperature, room)
@@ -94,14 +104,16 @@ class Estimator:
             "linear": Parameters(settings["linear_capacity"], 5 * settings["linear_conductance"]),
             "nonlinear": Parameters(settings["nonlinear_capacity"], settings["nonlinear_output_at_5k"], settings["exponent"]),
         }
-        self.temperatures = {"linear": None, "nonlinear": None}
+        if not settings.get('legacy_linear_enabled',False):
+            self.parameters.pop('linear')
+        self.temperatures = dict.fromkeys(self.parameters)
         self.previous = None
         self.active_since = None
         self.last_observation = None
         self.status = "waiting_for_observation"
         self.last_observed_run = None
         self.energy = {}
-        self.last_restart_errors = {'linear': None, 'nonlinear': None}
+        self.last_restart_errors = dict.fromkeys(self.parameters)
 
     def _begin_energy(self, timestamp=None):
         self.energy = {key: {'initial_temperature': value, 'input_kWh': 0.0,
@@ -150,7 +162,7 @@ class Estimator:
             previous_input = self._input(self.previous)
             if (gap > self.settings["maximum_gap_minutes"] * 60 or previous_input is None
                     or self.previous.room is None):
-                self.temperatures = {"linear": None, "nonlinear": None}
+                self.temperatures = dict.fromkeys(self.parameters)
                 self.energy = {}
                 self.status = "gap_requires_observation"
             else:
@@ -204,18 +216,18 @@ class Estimator:
             "status": self.status,
             "measurement_valid": bool(observation_valid),
             "observation_age_minutes": age / 60 if age is not None else None,
-            "linear_temperature": self.temperatures["linear"] if available else None,
+            "linear_temperature": self.temperatures.get("linear") if available else None,
             "nonlinear_temperature": self.temperatures["nonlinear"] if available else None,
-            "linear_power": self.parameters["linear"].output(self.temperatures["linear"], sample.room) if available else None,
+            "linear_power": self.parameters["linear"].output(self.temperatures["linear"], sample.room) if available and 'linear' in self.parameters else None,
             "nonlinear_power": self.parameters["nonlinear"].output(self.temperatures["nonlinear"], sample.room) if available else None,
             "measured_temperature": measured,
-            "linear_observation_error": residuals['linear'],
+            "linear_observation_error": residuals.get('linear'),
             "nonlinear_observation_error": residuals['nonlinear'],
             "restart_observation": restart,
             "initialized_from_measurement": initialized,
             "interval_energy": interval,
             "energy_balance": self.energy_balance(),
-            "linear_restart_error": self.last_restart_errors['linear'],
+            "linear_restart_error": self.last_restart_errors.get('linear'),
             "nonlinear_restart_error": self.last_restart_errors['nonlinear'],
             "linear_energy_balance_residual": self.energy_balance().get('linear',{}).get('residual_kWh'),
             "nonlinear_energy_balance_residual": self.energy_balance().get('nonlinear',{}).get('residual_kWh'),

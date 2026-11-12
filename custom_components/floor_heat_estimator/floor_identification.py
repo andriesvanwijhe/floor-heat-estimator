@@ -90,7 +90,9 @@ def identify(train, validation, settings, report, split, check, began):
 
     current_linear=Parameters(settings['linear_capacity'],5*settings['linear_conductance'])
     current_nonlinear=Parameters(settings['nonlinear_capacity'],settings['nonlinear_output_at_5k'],settings['exponent'])
-    linear,linear_fit,linear_train=search(1.,current_linear,linear=True)
+    legacy = settings.get('legacy_linear_enabled',False)
+    if legacy:
+        linear,linear_fit,linear_train=search(1.,current_linear,linear=True)
     profile=[]
     candidates=[]
     warm=current_nonlinear
@@ -131,9 +133,9 @@ def identify(train, validation, settings, report, split, check, began):
         exponent_profile_interpretation='Training-cost sensitivity, not a statistical confidence interval',
         exponent_best={'exponent':nonlinear.exponent,'training_cost_K2':best**2})
 
-    for name,candidate,fit,training,current in (
-            ('linear',linear,linear_fit,linear_train,current_linear),
-            ('nonlinear',nonlinear,nonlinear_fit,nonlinear_train,current_nonlinear)):
+    models=[('nonlinear',nonlinear,nonlinear_fit,nonlinear_train,current_nonlinear)]
+    if legacy:models.insert(0,('linear',linear,linear_fit,linear_train,current_linear))
+    for name,candidate,fit,training,current in models:
         _,_,held=evaluate(validation,candidate,check)
         _,_,baseline=evaluate(validation,current,check)
         singular=np.linalg.svd(fit.jac[:,:2],compute_uv=False)
@@ -161,10 +163,10 @@ def identify(train, validation, settings, report, split, check, began):
             'accepted':all(checks.values())}
     report['accepted']=all(v['accepted'] for v in report['models'].values())
     if report['accepted']:
-        report.update(status='accepted',parameters={'linear_capacity':linear.capacity,
-            'linear_conductance':linear.output_at_5k/5,'nonlinear_capacity':nonlinear.capacity,
+        report.update(status='accepted',parameters={'linear_capacity':linear.capacity if legacy else settings['linear_capacity'],
+            'linear_conductance':linear.output_at_5k/5 if legacy else settings['linear_conductance'],'nonlinear_capacity':nonlinear.capacity,
             'nonlinear_output_at_5k':nonlinear.output_at_5k,'exponent':nonlinear.exponent},
-            reason='Both models passed complete-cycle temperature and restart validation')
+            reason='Active floor models passed complete-cycle temperature and restart validation')
     else:
         failed=[name+': '+', '.join(k for k,v in m['checks'].items() if not v)
                 for name,m in report['models'].items() if not m['accepted']]

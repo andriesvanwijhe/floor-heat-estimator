@@ -3,13 +3,14 @@
 from .house_const import HOUSE_DEFAULTS
 
 DOMAIN = "floor_heat_estimator"
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 FIT_KEYS = ("linear_capacity", "linear_conductance", "nonlinear_capacity", "nonlinear_output_at_5k", "exponent")
 SOURCE_KEYS = ("heat_input", "room_temperature", "supply_temperature", "return_temperature", "flow", "mode")
 DEFAULTS = {
     **HOUSE_DEFAULTS,
     "name": "Floor heat estimator",
     "active_mode": "hc",
+    "legacy_linear_enabled": False,
     "flow_threshold": 100.0,
     "settling_minutes": 10.0,
     "linear_capacity": 0.208787,
