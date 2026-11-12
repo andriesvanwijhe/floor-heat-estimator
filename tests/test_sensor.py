@@ -116,6 +116,7 @@ class ParameterSensorTests(unittest.TestCase):
         self.assertAlmostEqual(entity.extra_state_attributes["coefficient_kW_per_K_to_n"], 0.08)
 
     def test_setup_preserves_existing_entities_and_adds_fit_diagnostics(self):
+        self.coordinator.settings['legacy_linear_enabled']=True
         entities = []
         hass = SimpleNamespace(data={"floor_heat_estimator": {"example": self.coordinator}})
         asyncio.run(SENSOR.async_setup_entry(hass, self.entry, entities.extend))
@@ -124,6 +125,13 @@ class ParameterSensorTests(unittest.TestCase):
         parameter_entities = [e for e in entities if isinstance(e, SENSOR.FloorParameterSensor)]
         self.assertEqual(len(parameter_entities), 6)
         self.assertTrue(all(e._attr_entity_category == "diagnostic" for e in parameter_entities))
+
+    def test_default_setup_has_only_exponent_floor_entities(self):
+        entities=[]
+        hass=SimpleNamespace(data={'floor_heat_estimator':{'example':self.coordinator}})
+        asyncio.run(SENSOR.async_setup_entry(hass,self.entry,entities.extend))
+        self.assertFalse(any(e.key.startswith('linear_') for e in entities))
+        self.assertTrue(any(e.key=='nonlinear_power' for e in entities))
 
 
 if __name__ == "__main__":

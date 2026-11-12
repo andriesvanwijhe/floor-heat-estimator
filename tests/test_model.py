@@ -65,7 +65,7 @@ class ModelTests(unittest.TestCase):
 
 class EstimatorTests(unittest.TestCase):
     def setUp(self):
-        self.settings = {**DEFAULTS, "settling_minutes": 2}
+        self.settings = {**DEFAULTS, "settling_minutes": 2, 'legacy_linear_enabled':True}
         self.engine = Estimator(self.settings)
         self.t0 = 1700000000.
 

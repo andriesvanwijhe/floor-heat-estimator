@@ -38,7 +38,8 @@
           "import_history_on_start": "Import Recorder history once before the first automatic fit",
           "exponent_min": "Minimum fitted exponent",
           "exponent_max": "Maximum fitted exponent",
-          "floor_fit_max_minutes": "Floor fitting time limit (minutes)"
+          "floor_fit_max_minutes": "Floor fitting time limit (minutes)",
+          "legacy_linear_enabled": "Enable legacy linear floor model (additional CPU and entities)"
         }
       },
       "house": {
@@ -71,7 +72,12 @@
           "house_capacity_prior_strength": "Heat capacity prior strength",
           "house_solar_uncertainty": "Solar uncertainty for thermal fitting (m²)",
           "house_solar_memory_hours": "Solar influence decay after sunset (hours)",
-          "house_heat_imbalance_minutes": "Heat imbalance window (30 or 60 minutes)"
+          "house_heat_imbalance_minutes": "Heat imbalance window (30 or 60 minutes)",
+          "house_dynamic_enabled": "Enable dynamic heating forecast",
+          "house_dynamic_max_power": "Maximum thermal pump output to floor (kW)",
+          "house_dynamic_horizon": "Dynamic planning horizon (24–48 hours)",
+          "house_dynamic_interval": "Dynamic forecast refresh interval (minutes)",
+          "house_dynamic_max_minutes": "Dynamic forecast runtime limit (minutes)"
         },
         "data_description": {
           "house_solar_uncertainty": "Uncertain effective solar area. Higher values reduce solar influence on RC identification; 0 disables weighting and the separate gain stage. Validation always uses full weight.",
@@ -121,7 +127,8 @@
           "import_history_on_start": "Import Recorder history once before the first automatic fit",
           "exponent_min": "Minimum fitted exponent",
           "exponent_max": "Maximum fitted exponent",
-          "floor_fit_max_minutes": "Floor fitting time limit (minutes)"
+          "floor_fit_max_minutes": "Floor fitting time limit (minutes)",
+          "legacy_linear_enabled": "Enable legacy linear floor model (additional CPU and entities)"
         }
       },
       "house": {
@@ -154,7 +161,12 @@
           "house_capacity_prior_strength": "Heat capacity prior strength",
           "house_solar_uncertainty": "Solar uncertainty for thermal fitting (m²)",
           "house_solar_memory_hours": "Solar influence decay after sunset (hours)",
-          "house_heat_imbalance_minutes": "Heat imbalance window (30 or 60 minutes)"
+          "house_heat_imbalance_minutes": "Heat imbalance window (30 or 60 minutes)",
+          "house_dynamic_enabled": "Enable dynamic heating forecast",
+          "house_dynamic_max_power": "Maximum thermal pump output to floor (kW)",
+          "house_dynamic_horizon": "Dynamic planning horizon (24–48 hours)",
+          "house_dynamic_interval": "Dynamic forecast refresh interval (minutes)",
+          "house_dynamic_max_minutes": "Dynamic forecast runtime limit (minutes)"
         },
         "data_description": {
           "house_solar_uncertainty": "Uncertain effective solar area. Higher values reduce solar influence on RC identification; 0 disables weighting and the separate gain stage. Validation always uses full weight.",

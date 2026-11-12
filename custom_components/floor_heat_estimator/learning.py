@@ -124,6 +124,8 @@ class LearningManager:
             "linear": Parameters(settings["linear_capacity"], 5 * settings["linear_conductance"]),
             "nonlinear": Parameters(settings["nonlinear_capacity"], settings["nonlinear_output_at_5k"], settings["exponent"]),
         }
+        if not settings.get('legacy_linear_enabled',False):
+            self.coordinator.engine.parameters.pop('linear')
 
     async def _async_fit(self, include_legacy, apply, import_history=False):
         self.last_attempt = datetime.now(UTC).timestamp()

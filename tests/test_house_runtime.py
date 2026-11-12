@@ -46,6 +46,48 @@ const = importlib.import_module('_house_runtime_tests.const')
 
 
 class HouseRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def prediction_sources(self):
+        now=datetime.now(UTC)
+        start=int(now.timestamp()//3600)*3600
+        source=SimpleNamespace(state='ready',last_updated=now,attributes={
+            'time':[start+i*3600 for i in range(50)],'temperature_2m':[5]*50,
+            'shortwave_radiation':[0]*50})
+        self.coordinator.hass.states=SimpleNamespace(get=lambda entity:
+            source if entity==self.manager.settings['house_forecast_source'] else
+            SimpleNamespace(state='20.25',attributes={'unit_of_measurement':'°C'}))
+        self.coordinator.engine=SimpleNamespace(previous=SimpleNamespace(timestamp=now.timestamp()),
+            status='estimated',temperatures={'nonlinear':28},parameters={
+                'nonlinear':SimpleNamespace(capacity=.2,output_at_5k=1.6,exponent=1.5)})
+        self.manager.own_heat_source=True
+        self.manager.engine.state=(21,18)
+        self.manager.engine.timestamp=now.timestamp()
+        return now
+
+    async def test_dynamic_worker_uses_current_room_and_preserves_live_states_and_steady_forecast(self):
+        now=self.prediction_sources()
+        request,error=self.manager.prediction_request(now)
+        self.assertIsNone(error)
+        self.assertEqual(request['initial'],[20.25,18,28])
+        self.manager.forecast={'status':'ready','energy_kWh':42}
+        with patch.object(runtime,'run_worker',AsyncMock(return_value={'status':'ready','hourly':[]})) as worker:
+            await self.manager._dynamic_prediction()
+        self.assertEqual(worker.await_args.args[2],'dynamic_forecast.py')
+        self.assertEqual(self.manager.engine.state,(21,18))
+        self.assertEqual(self.manager.forecast['energy_kWh'],42)
+        self.assertTrue(self.manager.dynamic_forecast['forecast_only'])
+
+    async def test_dynamic_worker_refuses_changed_calibration_or_missing_floor_state(self):
+        now=self.prediction_sources()
+        self.coordinator.engine.temperatures['nonlinear']=None
+        self.assertEqual(self.manager.prediction_request(now)[1],'initial_temperature_unavailable')
+        self.coordinator.engine.temperatures['nonlinear']=28
+        async def change(*args):
+            self.manager.engine.parameters=runtime.HouseParameters(ci=8)
+            return {'status':'ready','hourly':[]}
+        with patch.object(runtime,'run_worker',side_effect=change):
+            await self.manager._dynamic_prediction()
+        self.assertEqual(self.manager.dynamic_forecast['status'],'parameters_changed')
+
     async def test_live_house_uses_cumulative_floor_energy_for_preceding_interval(self):
         self.manager.own_heat_source=True
         self.coordinator.settings.update(record_samples=False,house_learning_enabled=False)

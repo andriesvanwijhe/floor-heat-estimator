@@ -52,11 +52,16 @@ class FittingTests(unittest.TestCase):
         self.assertLess(result["models"]["nonlinear"]["validation_rmse_K"], 0.1)
 
     def test_validation_ceiling_rejects_both_parameter_updates_atomically(self):
-        result = fitting.fit_samples(self.samples, {**DEFAULTS, "maximum_fit_rmse": 0.05}, self.samples[-1].timestamp)
+        result = fitting.fit_samples(self.samples, {**DEFAULTS, "maximum_fit_rmse": 0.05,'legacy_linear_enabled':True}, self.samples[-1].timestamp)
         self.assertFalse(result["accepted"])
         self.assertEqual(result["parameters"], {})
         self.assertFalse(result["models"]["linear"]["accepted"])
         self.assertTrue(result["models"]["nonlinear"]["accepted"])
+
+    def test_default_exponent_fit_is_not_blocked_by_unused_linear_model(self):
+        result=fitting.fit_samples(self.samples,{**DEFAULTS,'maximum_fit_rmse':.05},self.samples[-1].timestamp)
+        self.assertTrue(result['accepted'],result)
+        self.assertNotIn('linear',result['models'])
 
     def test_validation_is_later_and_excludes_whole_training_cycle(self):
         split = datetime.fromisoformat(self.result["training_end_utc"]).timestamp()

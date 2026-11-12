@@ -38,6 +38,11 @@ DESCRIPTIONS = (
     ("house_tomorrow_heat_load", "House tomorrow average heat load", "kW"),
     ("house_tomorrow_heat_energy", "House tomorrow heating energy", "kWh"),
     ("house_tomorrow_peak_heat_load", "House tomorrow peak heat load", "kW"),
+    ("house_dynamic_status", "House dynamic forecast status", None),
+    ("house_dynamic_heat_load", "House dynamic average heat load", "kW"),
+    ("house_dynamic_energy", "House dynamic heating energy", "kWh"),
+    ("house_dynamic_minimum_room", "House forecast minimum room temperature", "°C"),
+    ("house_dynamic_maximum_room", "House forecast maximum room temperature", "°C"),
 )
 
 
@@ -59,7 +64,7 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
             name=getattr(coordinator,'settings',coordinator.house.settings)['name']+' — House',manufacturer='Floor Heat Estimator',model='House thermal model')
         if unit == "timestamp":
             self._attr_device_class = SensorDeviceClass.TIMESTAMP
-        elif key != "house_fit_status":
+        elif key not in ("house_fit_status",'house_dynamic_status'):
             self._attr_native_unit_of_measurement = unit
             self._attr_state_class = SensorStateClass.MEASUREMENT
             self._attr_suggested_display_precision = 0 if key in ("house_point_count", "house_heat_imbalance") else 3
@@ -69,7 +74,7 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
                 self._attr_device_class = SensorDeviceClass.POWER
             elif unit == "kWh":
                 self._attr_device_class = SensorDeviceClass.ENERGY
-            if key.startswith("house_tomorrow_"):
+            if key.startswith(("house_tomorrow_",'house_dynamic_')):
                 self._attr_entity_category = None
                 self._attr_state_class = None
 
@@ -118,6 +123,12 @@ class HouseSensor(CoordinatorEntity, SensorEntity):
                               initialization="Thermostat reading at startup or after missing drivers")
         if self.key.startswith("house_tomorrow_"):
             attributes.update(manager.forecast, forecast_entity=manager.settings["house_forecast_source"])
+        if self.key.startswith('house_dynamic_'):
+            # Keep the hourly array on one entity; duplicating it on five
+            # states would multiply Recorder storage on small flash devices.
+            attributes.update({key:value for key,value in manager.dynamic_forecast.items()
+                if key!='hourly' or self.key=='house_dynamic_heat_load'})
+            attributes['status']=manager.data()['house_dynamic_status']
         if manager.engine.timestamp is not None:
             attributes["state_time_utc"] = datetime.fromtimestamp(manager.engine.timestamp, UTC).isoformat()
         parameter = self.key.removeprefix("house_")

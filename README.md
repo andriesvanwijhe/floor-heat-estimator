@@ -1,5 +1,68 @@
 # Floor Heat Estimator
 
+## Dynamic prediction and standalone deployment (0.8.0)
+
+The existing **tomorrow steady-state forecast and entity IDs are unchanged**.
+The optional dynamic forecast couples the current two-node house model to the
+exponent floor model. It starts from measured room and estimated envelope/floor
+temperatures, optimizes up to 48 hours and publishes the next 24 hours. Solar
+and stored heat may raise room temperature above the target. No future room
+corrections or midnight resets occur inside the prediction.
+
+On the House device, `Update dynamic forecast` runs a prediction manually.
+House options configure automatic prediction (default every 15 minutes), target
+temperature, maximum **thermal** pump power to the floor (default 8 kW), planning
+horizon and runtime limit (up to 10 minutes). Configure the power limit for the
+actual installation. This release provides forecasts, not actuator commands.
+
+New sensors are `House dynamic forecast status`, `House dynamic average heat
+load`, `House dynamic heating energy`, `House forecast minimum room temperature`
+and `House forecast maximum room temperature`. The dynamic heat-load entity contains an
+`hourly` attribute for plotting, including pump input, floor output, room/minimum
+temperature, envelope/floor temperatures, outdoor losses and stored-energy change.
+Totals describe the next 24 hours, not the extended optimization horizon. An
+initial/future comfort deficit is reported as `comfort_shortfall`; failed or timed
+out optimizations do not publish a new schedule. Results become unavailable when
+stale. Dynamic prediction requires this integration's exponent floor heat source.
+
+Example Plotly traces (select the actual entity ID from Developer tools):
+
+```yaml
+type: custom:plotly-graph
+title: Dynamic heating forecast
+raw_plotly_config: true
+entities:
+  - entity: sensor.floor_heat_estimator_house_dynamic_average_heat_load
+    name: Pump thermal input
+    x: $ex (hass.states['sensor.floor_heat_estimator_house_dynamic_average_heat_load']?.attributes.hourly || []).map(r => r.start)
+    'y': $ex (hass.states['sensor.floor_heat_estimator_house_dynamic_average_heat_load']?.attributes.hourly || []).map(r => r.pump_heat_input_kW)
+    mode: lines
+    line:
+      shape: hv
+layout:
+  yaxis:
+    title: Thermal power (kW)
+```
+
+The exponent floor model is now the default live/learning path. It is no longer
+rejected because an unused linear model fails validation. `Enable legacy linear
+floor model` restores the older comparison entities and both-model acceptance.
+Existing linear registry entries are not deleted; they are inactive while the
+compatibility mode is off. Exponent state restoration works independently and
+accepts existing snapshots. Manual linear coefficients remain stored for this
+optional mode.
+
+For a product without Home Assistant, see [standalone/README.md](standalone/README.md).
+It builds a numerical-only distribution with JSON operations for steady/dynamic
+prediction and house/exponent-floor fitting, plus an optional Nuitka build recipe.
+No Home Assistant, browser, container or graphical desktop is needed. Fitting
+limits can be set to 60 minutes; prediction has a 10-minute limit. The integration
+serializes fitting/prediction workers and limits numerical-library threads.
+
+Dynamic plans are conditional on the selected fit, floor calibration, forecast
+and initial states. Hourly average thermal powers assume modulation/duty cycling;
+compressor minimum run times, DHW interruptions and tariffs are not optimized.
+
 An experimental Home Assistant custom integration for estimating heat released by an underfloor heating circuit during heating and cooldown.
 
 Version 0.7.0 adds solar-uncertainty weighting for house thermal identification, a separate gain-only fitting stage, and a signed heat-imbalance diagnostic. House dynamics use continuous temperature simulations, fixed 30/60/180-minute temperature-change errors and daily energy balance. Total thermal resistance stays anchored to the measured energy signature. Floor fitting and live midnight correction are unchanged. The house model follows Bacher & Madsen (2011), Figure 1, with fitted constant internal heat gain (initially 500 W). It includes initial Recorder history import, separate house fitting settings, hidden envelope temperature and physical-parameter entities. Models can use manual coefficients or validated learned coefficients. Floor and house identification remain separate stages of the thermal-analysis tool.

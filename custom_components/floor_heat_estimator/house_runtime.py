@@ -19,7 +19,7 @@ from .house_const import HOUSE_KEYS
 from .house_data import (append_row, floor_signature, house_signature, make_bins,
                          prepare_fit_request, settings_signature, solar_state)
 from .house_model import HouseEstimator, HouseParameters
-from .house_forecast import tomorrow_demand
+from .house_forecast import tomorrow_demand, weather_intervals
 from .house_balance import HeatBalanceTracker
 from .source import numeric_state
 
@@ -45,7 +45,7 @@ def valid_parameters(values):
         return False
 
 
-async def run_worker(request, maximum_seconds):
+async def run_worker(request, maximum_seconds, filename="house_fit.py"):
     """A separate process avoids Python filter loops competing for HA's GIL."""
     env = {**os.environ, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
            "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1"}
@@ -54,7 +54,7 @@ async def run_worker(request, maximum_seconds):
     # worker must see the same dependency paths as the running integration.
     env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(path for path in sys.path if isinstance(path, str) and path))
     process = await asyncio.create_subprocess_exec(
-        sys.executable, str(Path(__file__).with_name("house_fit.py")),
+        sys.executable, str(Path(__file__).with_name(filename)),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE, env=env)
     try:
@@ -89,6 +89,9 @@ class HouseManager:
         self.active_provisional = False
         self.active_energy_anchor = None
         self.forecast = {"status": "waiting"}
+        self.dynamic_forecast = {'status':'waiting','hourly':[]}
+        self.dynamic_task = None
+        self.dynamic_last_attempt = 0.
         self.active_intervals = {}
         self.calibrated_floor = None
         self.last_attempt_floor = None
@@ -152,6 +155,19 @@ class HouseManager:
                 "house_last_attempt": self.last_attempt, "house_last_accepted": self.last_accepted,
                 "house_next_refit": self.next_refit,
                 "house_point_count": self.report.get("observation_count")}
+        dynamic=self.dynamic_forecast
+        data['house_dynamic_status']=dynamic.get('status','waiting')
+        if dynamic.get('status') in ('ready','comfort_shortfall'):
+            generated=dynamic.get('generated_timestamp',0)
+            age=datetime.now(UTC).timestamp()-generated
+            if age>max(2*self.settings['house_dynamic_interval']*60,
+                       (self.settings['house_dynamic_interval']+self.settings['house_dynamic_max_minutes'])*60):
+                data['house_dynamic_status']='stale'
+            else:
+                data.update(house_dynamic_heat_load=dynamic['average_load_kW'],
+                    house_dynamic_energy=dynamic['energy_kWh'],
+                    house_dynamic_minimum_room=dynamic['minimum_room_temperature_C'],
+                    house_dynamic_maximum_room=dynamic['maximum_room_temperature_C'])
         if self.forecast.get("status") == "ready":
             data.update(house_tomorrow_heat_load=self.forecast["average_load_kW"],
                         house_tomorrow_heat_energy=self.forecast["energy_kWh"],
@@ -290,6 +306,9 @@ class HouseManager:
             self.engine.state = self.engine.covariance = self.engine.timestamp = None
             self.heat_balance.clear()
         await self.save_state()
+        if (self.settings['house_dynamic_enabled'] and
+                now.timestamp()-self.dynamic_last_attempt>=self.settings['house_dynamic_interval']*60):
+            self.start_dynamic_forecast()
         due = self.next_refit
         if due is not None and now.timestamp() >= due and not self.busy:
             self.start_fit(import_history=self.needs_import)
@@ -305,6 +324,83 @@ class HouseManager:
             return
         self.forecast = tomorrow_demand(source.attributes, self.engine.parameters,
             now, self.timezone, self.settings["house_forecast_target"])
+
+    def start_dynamic_forecast(self):
+        """Queue one prediction; never run optimization on HA's event loop."""
+        if self.dynamic_task is not None and not self.dynamic_task.done():
+            return
+        self.dynamic_last_attempt=datetime.now(UTC).timestamp()
+        if self.dynamic_forecast.get('status') in ('ready','comfort_shortfall'):
+            self.dynamic_forecast['calculation_status']='queued'
+        else:self.dynamic_forecast={'status':'queued','hourly':[]}
+        self.dynamic_task=self.entry.async_create_background_task(self.hass,
+            self._dynamic_prediction(),f'{DOMAIN} dynamic prediction')
+
+    def prediction_request(self, now):
+        """Snapshot current states after waiting for the shared worker slot."""
+        source=self.hass.states.get(self.settings['house_forecast_source'])
+        if source is None or source.state in ('unknown','unavailable'):
+            return None,'forecast_source_unavailable'
+        updated=getattr(source,'last_updated',None)
+        if updated is not None and now.timestamp()-updated.timestamp()>12*3600:
+            return None,'stale_forecast'
+        if not self.own_heat_source:
+            return None,'requires_own_floor_heat_source'
+        state=self.engine.state
+        if state is None or self.engine.timestamp is None or now.timestamp()-self.engine.timestamp>self.settings['house_max_gap_minutes']*60:
+            return None,'house_state_unavailable'
+        floor=self.coordinator.engine
+        if (floor.previous is None or now.timestamp()-floor.previous.timestamp>self.settings['maximum_gap_minutes']*60
+                or floor.status in ('invalid_input','observation_expired','gap_requires_observation','waiting_for_observation')):
+            return None,'floor_state_unavailable'
+        tf=floor.temperatures.get('nonlinear')
+        room=numeric_state(self.hass.states.get(self.settings['room_temperature']),'room_temperature')
+        if tf is None or room is None:return None,'initial_temperature_unavailable'
+        start=int(now.timestamp()//300)*300
+        hours=weather_intervals(source.attributes,start,self.timezone,int(self.settings['house_dynamic_horizon']))
+        if not hours:return None,'incomplete_forecast'
+        p=floor.parameters['nonlinear']
+        return {'house':self.engine.parameters.to_dict(),
+            'floor':{'capacity':p.capacity,'output_at_5k':p.output_at_5k,'exponent':p.exponent},
+            'initial':[room,state[1],tf],'hours':hours,
+            'target_C':self.settings['house_forecast_target'],
+            'maximum_power_kW':self.settings['house_dynamic_max_power'],
+            'max_seconds':self.settings['house_dynamic_max_minutes']*60},None
+
+    async def _dynamic_prediction(self):
+        try:
+            # Same slot as house/floor identification: RAM does not multiply.
+            lock=self.hass.data.setdefault(f'{DOMAIN}_fit_lock',asyncio.Lock())
+            async with lock:
+                now=datetime.now(UTC)
+                request,error=self.prediction_request(now)
+                if error:
+                    self.dynamic_forecast={'status':error,'hourly':[]}
+                    return
+                parameters=request['house'];calibration=floor_signature(self.settings)
+                if self.dynamic_forecast.get('status') in ('ready','comfort_shortfall'):
+                    self.dynamic_forecast['calculation_status']='calculating'
+                else:self.dynamic_forecast={'status':'calculating','hourly':[]}
+                self.coordinator.async_update_listeners()
+                report=await run_worker(request,request['max_seconds']+30,'dynamic_forecast.py')
+                if parameters!=self.engine.parameters.to_dict() or calibration!=floor_signature(self.settings):
+                    self.dynamic_forecast={'status':'parameters_changed','hourly':[]}
+                    return
+                report.update(generated_timestamp=now.timestamp(),
+                    generated_at=now.isoformat(),timezone=self.timezone,
+                    forecast_entity=self.settings['house_forecast_source'],
+                    planning_horizon_hours=sum(r['seconds'] for r in request['hours'])/3600,
+                    forecast_only=True,calculation_status='idle')
+                self.dynamic_forecast=report
+        except asyncio.CancelledError:raise
+        except TimeoutError:
+            self.dynamic_forecast={'status':'timeout','reason':'Prediction worker exceeded its runtime limit','hourly':[]}
+        except Exception as error:
+            _LOGGER.exception('Dynamic forecast failed; steady-state prediction continues')
+            self.dynamic_forecast={'status':'error','reason':str(error),'hourly':[]}
+        finally:
+            self.dynamic_last_attempt=datetime.now(UTC).timestamp()
+            self.coordinator.async_update_listeners()
 
     def start_fit(self, import_history=False, apply=None, force=False):
         if self.busy:
@@ -442,6 +538,10 @@ class HouseManager:
 
     async def async_shutdown(self):
         self.cancel.set()
+        if self.dynamic_task is not None and not self.dynamic_task.done():
+            self.dynamic_task.cancel()
+            try:await self.dynamic_task
+            except asyncio.CancelledError:pass
         if self.recovery_task and not self.recovery_task.done():
             self.recovery_task.cancel()
             try: await self.recovery_task

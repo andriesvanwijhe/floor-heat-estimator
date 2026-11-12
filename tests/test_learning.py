@@ -72,7 +72,7 @@ class LearningTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(manager.active_parameters is not None,retained)
 
     def setUp(self):
-        settings = {**const.DEFAULTS, "import_history_on_start": False,
+        settings = {**const.DEFAULTS, "import_history_on_start": False,'legacy_linear_enabled':True,
                     **{key: "sensor." + key for key in const.SOURCE_KEYS}}
         self.parameters = dict(linear_capacity=.4, linear_conductance=.5, nonlinear_capacity=.45,
                                nonlinear_output_at_5k=2.5, exponent=1.4)
