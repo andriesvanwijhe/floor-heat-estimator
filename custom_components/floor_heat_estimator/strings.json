@@ -39,7 +39,9 @@
           "exponent_min": "Minimum fitted exponent",
           "exponent_max": "Maximum fitted exponent",
           "floor_fit_max_minutes": "Floor fitting time limit (minutes)",
-          "legacy_linear_enabled": "Enable legacy linear floor model (additional CPU and entities)"
+          "legacy_linear_enabled": "Enable legacy linear floor model (additional CPU and entities)",
+          "floor_fit_baseline_worsening_percent": "Allowed validation error increase versus active model (%)",
+          "floor_fit_baseline_error_floor": "Minimum baseline comparison error allowance (K)"
         }
       },
       "house": {
@@ -128,7 +130,9 @@
           "exponent_min": "Minimum fitted exponent",
           "exponent_max": "Maximum fitted exponent",
           "floor_fit_max_minutes": "Floor fitting time limit (minutes)",
-          "legacy_linear_enabled": "Enable legacy linear floor model (additional CPU and entities)"
+          "legacy_linear_enabled": "Enable legacy linear floor model (additional CPU and entities)",
+          "floor_fit_baseline_worsening_percent": "Allowed validation error increase versus active model (%)",
+          "floor_fit_baseline_error_floor": "Minimum baseline comparison error allowance (K)"
         }
       },
       "house": {

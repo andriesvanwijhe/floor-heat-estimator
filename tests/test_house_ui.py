@@ -57,6 +57,16 @@ model=importlib.import_module('_house_ui_tests.house_model')
 
 
 class HouseUITests(unittest.TestCase):
+    def test_floor_baseline_tolerances_are_editable_and_validated(self):
+        values={**self.defaults,'floor_fit_baseline_worsening_percent':10,
+                'floor_fit_baseline_error_floor':.1,'maximum_fit_rmse':2,
+                'floor_fit_max_minutes':30}
+        self.assertEqual(config.validate_parameters(values),{})
+        schema=config.parameter_schema(values)
+        for key in ('floor_fit_baseline_worsening_percent','floor_fit_baseline_error_floor'):
+            self.assertIn(key,schema)
+            self.assertEqual(config.validate_parameters({**values,key:-.1}),{key:'invalid_parameter'})
+
     def test_exponent_learning_bounds_are_configurable_and_ordered(self):
         self.assertEqual(config.validate_parameters(self.defaults),{})
         self.assertIn('exponent_min',config.parameter_schema(self.defaults))

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1
+
+- Make floor-fit baseline worsening allowance and minimum error allowance configurable, retaining the existing 5% and 0.05 K defaults.
+- Apply these settings consistently to held-out temperature RMSE, restart mean absolute error and absolute restart bias. Report the numerical acceptance limits alongside each candidate.
+- Preserve data requirements, physical constraints, calibration and house fitting behavior.
+
 ## 0.8.0
 
 - Preserve the existing tomorrow steady-state prediction and add an hourly

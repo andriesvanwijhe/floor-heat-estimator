@@ -8,6 +8,13 @@ import time
 from .model import Parameters, advance
 
 
+def baseline_error_limit(settings, baseline_error):
+    """Allowed held-out error; keep existing strict defaults on upgrade."""
+    return max(abs(baseline_error or 0) *
+               (1 + settings.get('floor_fit_baseline_worsening_percent', 5.0) / 100),
+               settings.get('floor_fit_baseline_error_floor', 0.05))
+
+
 def evaluate(traces, parameters, check=lambda: None):
     """No assimilation: observations are targets, including settled restarts."""
     errors, cycles, restarts = [], [], []
@@ -146,11 +153,11 @@ def identify(train, validation, settings, report, split, check, began):
         checks={'physical_parameters':not physical_bound,
                 'identifiable_capacity_and_gain':condition is not None and condition<10000,
                 'absolute_temperature_error':held['cycle_balanced_rmse_K']<=settings['maximum_fit_rmse'],
-                'temperature_vs_baseline':held['cycle_balanced_rmse_K']<=max(baseline['cycle_balanced_rmse_K']*1.05,.05),
+                'temperature_vs_baseline':held['cycle_balanced_rmse_K']<=baseline_error_limit(settings,baseline['cycle_balanced_rmse_K']),
                 'restart_evidence':held['restart_count']>=1,
                 'restart_absolute_error':held['restart_rmse_K'] is not None and held['restart_rmse_K']<=settings['maximum_fit_rmse'],
-                'restart_vs_baseline':held['restart_mae_K'] is not None and held['restart_mae_K']<=max((baseline['restart_mae_K'] or 0)*1.05,.05),
-                'restart_bias_vs_baseline':held['restart_bias_K'] is not None and abs(held['restart_bias_K'])<=max(abs(baseline['restart_bias_K'] or 0)*1.05,.05)}
+                'restart_vs_baseline':held['restart_mae_K'] is not None and held['restart_mae_K']<=baseline_error_limit(settings,baseline['restart_mae_K']),
+                'restart_bias_vs_baseline':held['restart_bias_K'] is not None and abs(held['restart_bias_K'])<=baseline_error_limit(settings,baseline['restart_bias_K'])}
         # A physical exponent boundary is allowed when predictions validate;
         # label its uncertainty explicitly rather than inventing precision.
         report['models'][name]={'capacity_kWh_per_K':candidate.capacity,'output_at_5K_kW':candidate.output_at_5k,
@@ -160,6 +167,14 @@ def identify(train, validation, settings, report, split, check, began):
             'at_bound':physical_bound or (name=='nonlinear' and at_exponent_bound),
             'exponent_identification':profile_status if name=='nonlinear' else 'fixed',
             'training':training,'validation':held,'baseline_validation':baseline,'checks':checks,
+            'acceptance_limits': {
+                'absolute_temperature_rmse_K': settings['maximum_fit_rmse'],
+                'temperature_vs_baseline_K': baseline_error_limit(settings,baseline['cycle_balanced_rmse_K']),
+                'restart_rmse_K': settings['maximum_fit_rmse'],
+                'restart_mae_vs_baseline_K': baseline_error_limit(settings,baseline['restart_mae_K']),
+                'restart_absolute_bias_vs_baseline_K': baseline_error_limit(settings,baseline['restart_bias_K']),
+                'baseline_worsening_percent': settings.get('floor_fit_baseline_worsening_percent',5.0),
+                'baseline_error_floor_K': settings.get('floor_fit_baseline_error_floor',0.05)},
             'accepted':all(checks.values())}
     report['accepted']=all(v['accepted'] for v in report['models'].values())
     if report['accepted']:

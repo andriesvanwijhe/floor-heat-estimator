@@ -50,6 +50,11 @@ class FittingTests(unittest.TestCase):
         self.assertAlmostEqual(result["parameters"]["nonlinear_output_at_5k"], 2.2, delta=0.08)
         self.assertAlmostEqual(result["parameters"]["exponent"], 1.4, delta=0.08)
         self.assertLess(result["models"]["nonlinear"]["validation_rmse_K"], 0.1)
+        limits=result['models']['nonlinear']['acceptance_limits']
+        self.assertEqual(limits['baseline_worsening_percent'],5)
+        self.assertEqual(limits['baseline_error_floor_K'],.05)
+        self.assertAlmostEqual(limits['temperature_vs_baseline_K'],
+            max(result['models']['nonlinear']['baseline_validation_rmse_K']*1.05,.05))
 
     def test_validation_ceiling_rejects_both_parameter_updates_atomically(self):
         result = fitting.fit_samples(self.samples, {**DEFAULTS, "maximum_fit_rmse": 0.05,'legacy_linear_enabled':True}, self.samples[-1].timestamp)

@@ -27,6 +27,8 @@ LIMITS = {
     "learning_days": (2, 90, "d"),
     "refit_interval_days": (1, 90, "d"),
     "maximum_fit_rmse": (0.05, 5, "K"),
+    "floor_fit_baseline_worsening_percent": (0, 100, "%"),
+    "floor_fit_baseline_error_floor": (0, 5, "K"),
 }
 
 
